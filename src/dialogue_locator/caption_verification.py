@@ -62,7 +62,14 @@ def verify_caption_candidates(
                     start_time=window_start,
                     duration=window_duration,
                 )
-                transcription = transcriber(audio_path)
+                try:
+                    transcription = transcriber(audio_path)
+                finally:
+                    asr_call_count = max(
+                        1,
+                        int(getattr(transcriber, "last_asr_call_count", 1)),
+                    )
+                    processed_seconds += window_duration * (asr_call_count - 1)
                 relative_match = find_dialogue(
                     query,
                     transcription.words,

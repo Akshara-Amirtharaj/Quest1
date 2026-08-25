@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "defaults": {
+    "work_dir": ".cache/media",
+    "output_dir": "experiments/audio_localization_baseline/results/frames",
+    "model_cache": ".cache/models",
+    "model": "base.en",
+    "device": "cpu",
+    "compute_type": "int8",
+    "language": "en",
+    "fuzzy_threshold": 85,
+    "reuse_transcript_cache": false
+  },
+  "cases": [
+    {
+      "id": "visible-captions-full-asr",
+      "url": "https://www.youtube.com/watch?v=qzq_-plz0bQ",
+      "target": "captions like this",
+      "production_baseline": {
+        "dialogue_start_seconds": 2.16,
+        "timestamp_tolerance_seconds": 0.15,
+        "matched_text": "captions like this"
+      }
+    }
+  ]
+}

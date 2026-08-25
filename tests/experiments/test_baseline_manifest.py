@@ -30,6 +30,7 @@ def test_manifest_parses_defaults_overrides_and_production_reference(tmp_path: P
                 {
                     "id": "case-one",
                     "url": "https://example.test/video",
+                    "source_page_url": "https://publisher.example.test/watch/one",
                     "target": "Target words",
                     "model": "small",
                     "production_baseline": {
@@ -49,6 +50,7 @@ def test_manifest_parses_defaults_overrides_and_production_reference(tmp_path: P
     assert len(manifest.cases) == 1
     case = manifest.cases[0]
     assert case.case_id == "case-one"
+    assert case.source_page_url == "https://publisher.example.test/watch/one"
     assert case.model == "small"
     assert case.language == "en"
     assert case.production_baseline is not None

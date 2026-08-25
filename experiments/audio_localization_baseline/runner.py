@@ -16,10 +16,15 @@ from unittest.mock import patch
 
 from dialogue_locator import __version__
 from dialogue_locator import pipeline
+from dialogue_locator.errors import V0Error
 from dialogue_locator.models import MediaInfo, Transcription, V1Result
 
 from .manifest import BenchmarkCase, BenchmarkManifest
-from .metrics import calculate_asr_cost_metrics, first_occurrence_matches_baseline
+from .metrics import (
+    calculate_asr_cost_metrics,
+    first_occurrence_matches_baseline,
+    seconds_to_hms,
+)
 
 
 Clock = Callable[[], float]
@@ -131,6 +136,7 @@ def run_benchmark(
     report = {
         "schema_version": 1,
         "benchmark": "production-run_v1-full-audio-asr-baseline",
+        "matching_logic": "dialogue_locator.matching.find_dialogue_candidates",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "manifest_path": str(manifest_path.resolve()),
         "environment": {
@@ -156,6 +162,7 @@ def _run_case(case: BenchmarkCase, manifest: BenchmarkManifest, *, clock: Clock)
                 observation,
                 clock=clock,
                 reuse_transcript_cache=defaults.reuse_transcript_cache,
+                local_media_path=case.local_media_path,
             ):
                 result = pipeline.run_v1(
                     case.url,
@@ -180,27 +187,40 @@ def _run_case(case: BenchmarkCase, manifest: BenchmarkManifest, *, clock: Clock)
         observation.asr_audio_seconds,
     )
     fallback_reason = _fallback_reason(observation, result)
+    media_duration = observation.media_info.duration if observation.media_info is not None else None
+    detected_timestamp = result.match.start if result is not None else None
     record: dict[str, Any] = {
         "case_id": case.case_id,
         "url": case.url,
+        "media_path": str(result.media_path) if result is not None else None,
+        "source_page_url": case.source_page_url,
         "target": case.target,
         "status": "ok" if result is not None else "error",
         "total_wall_clock_seconds": total_seconds,
+        "total_wall_clock_hms": seconds_to_hms(total_seconds),
         "asr_wall_clock_seconds": asr_cost.wall_clock_seconds,
-        "media_duration_seconds": (
-            observation.media_info.duration if observation.media_info is not None else None
-        ),
+        "asr_wall_clock_hms": seconds_to_hms(asr_cost.wall_clock_seconds),
+        "media_duration_seconds": media_duration,
+        "media_duration_hms": seconds_to_hms(media_duration),
         "audio_duration_seconds": observation.audio_duration_seconds,
+        "audio_duration_hms": seconds_to_hms(observation.audio_duration_seconds),
         "expensive_asr_audio_seconds_processed": asr_cost.expensive_audio_seconds_processed,
+        "expensive_asr_audio_processed_hms": seconds_to_hms(
+            asr_cost.expensive_audio_seconds_processed
+        ),
         "asr_call_count": asr_cost.call_count,
-        "detected_timestamp_seconds": result.match.start if result is not None else None,
+        "detected_timestamp_seconds": detected_timestamp,
+        "detected_timestamp_hms": seconds_to_hms(detected_timestamp),
         "matched_text": result.match.matched_text if result is not None else None,
         "match_type": result.match.match_type if result is not None else None,
         "match_score": result.match.score if result is not None else None,
+        "fuzzy_threshold": case.fuzzy_threshold,
         "first_occurrence_matches_production_baseline": first_occurrence_matches_baseline(
-            result.match.start if result is not None else None,
+            detected_timestamp,
             result.match.matched_text if result is not None else None,
             case.production_baseline,
+            target_verified=result is not None,
+            earliest_valid_occurrence=result is not None,
         ),
         "production_baseline": (
             asdict(case.production_baseline) if case.production_baseline is not None else None
@@ -228,6 +248,7 @@ def _instrument_production_baseline(
     *,
     clock: Clock,
     reuse_transcript_cache: bool,
+    local_media_path: Path | None = None,
 ) -> Iterator[None]:
     original_transcriber = pipeline.FasterWhisperTranscriber
     original_extract_audio = pipeline.extract_speech_audio
@@ -243,6 +264,16 @@ def _instrument_production_baseline(
         return audio_path
 
     def measured_acquire(*args: Any, **kwargs: Any) -> tuple[Path, dict[str, Any]]:
+        if local_media_path is not None:
+            resolved = local_media_path.resolve()
+            if not resolved.is_file():
+                raise V0Error(f"Controlled fixture media does not exist: {resolved}")
+            metadata = {
+                "extractor": "local-fixture",
+                "media_cache_hit": True,
+            }
+            observation.acquisition_metadata = dict(metadata)
+            return resolved, metadata
         media_path, metadata = original_acquire(*args, **kwargs)
         observation.acquisition_metadata = dict(metadata)
         return media_path, metadata
@@ -257,6 +288,8 @@ def _instrument_production_baseline(
         stack.enter_context(patch.object(pipeline, "extract_speech_audio", measured_extract))
         stack.enter_context(patch.object(pipeline, "acquire_media", measured_acquire))
         stack.enter_context(patch.object(pipeline, "_inspect_media_cached", measured_inspect))
+        if local_media_path is not None:
+            stack.enter_context(patch.object(pipeline, "validate_public_url", lambda url: url))
         if not reuse_transcript_cache:
             stack.enter_context(patch.object(pipeline, "CachedTranscriber", _UncachedTranscriber))
         yield

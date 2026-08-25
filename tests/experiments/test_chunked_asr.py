@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import pytest
+
+from dialogue_locator.errors import V0Error
 from dialogue_locator.models import TranscriptWord, Transcription
 from experiments.audio_localization_chunked.chunking import (
     AudioChunk,
@@ -9,6 +12,7 @@ from experiments.audio_localization_chunked.chunking import (
     merge_overlapping_words,
     restore_absolute_timestamps,
     search_chunks,
+    stitch_adjacent_words,
 )
 
 
@@ -161,3 +165,108 @@ def test_first_occurrence_near_end_processes_until_final_chunk() -> None:
     assert result.match.start == 23.0
     assert calls == [0, 1, 2]
     assert result.processed_chunks == len(chunks)
+
+
+def test_silent_chunk_without_timestamped_words_does_not_abort_search() -> None:
+    chunks = generate_chunks(18.0, 10.0, 2.0)
+    calls: list[int] = []
+
+    def transcribe(chunk: AudioChunk) -> Transcription:
+        calls.append(chunk.index)
+        if chunk.index == 0:
+            raise V0Error("Speech recognition produced no timestamped words.")
+        return _transcription(("target", 1.0, 1.4), ("phrase", 1.5, 1.9))
+
+    result = search_chunks("target phrase", chunks, transcribe, fuzzy_threshold=85.0)
+
+    assert calls == [0, 1]
+    assert result.match is not None
+    assert result.match.start == 9.0
+    assert result.processed_chunks == 2
+
+
+def test_non_silence_transcription_error_is_not_suppressed() -> None:
+    chunks = generate_chunks(8.0, 8.0, 2.0)
+
+    def transcribe(_chunk: AudioChunk) -> Transcription:
+        raise V0Error("Speech recognition failed with model 'base.en': test failure")
+
+    with pytest.raises(V0Error, match="test failure"):
+        search_chunks("target phrase", chunks, transcribe, fuzzy_threshold=85.0)
+
+
+def test_overlap_wording_variants_are_not_interleaved_at_seam() -> None:
+    previous = [
+        TranscriptWord("a", 7.5, 7.8, 0.9),
+        TranscriptWord("Torovian", 8.7, 9.3, 0.8),
+        TranscriptWord("custom", 9.4, 9.9, 0.8),
+    ]
+    incoming = [
+        TranscriptWord("Taruvian", 8.65, 9.25, 0.9),
+        TranscriptWord("custom", 9.35, 9.85, 0.9),
+        TranscriptWord("after", 10.1, 10.5, 0.9),
+    ]
+
+    stitched = stitch_adjacent_words(previous, incoming, seam=9.0)
+
+    assert [word.text for word in stitched] == ["a", "Torovian", "custom", "after"]
+
+
+def test_exact_first_occurrence_wins_and_middle_target_stops_scan() -> None:
+    chunks = generate_chunks(100.0, 30.0, 5.0)
+    calls: list[int] = []
+    result = search_chunks(
+        "middle target",
+        chunks,
+        _indexed_transcriber(
+            {
+                1: _transcription(
+                    ("middle", 8.0, 8.4),
+                    ("target", 8.5, 8.9),
+                    ("middle", 18.0, 18.4),
+                    ("target", 18.5, 18.9),
+                )
+            },
+            calls,
+        ),
+        fuzzy_threshold=85.0,
+        overlap_seconds=5.0,
+    )
+
+    assert result.match is not None
+    assert result.match.match_type == "exact"
+    assert result.match.start == 33.0
+    assert calls == [0, 1]
+
+
+def test_adjacent_context_recovers_boundary_phrase_despite_wording_difference() -> None:
+    chunks = generate_chunks(60.0, 30.0, 5.0)
+    calls: list[int] = []
+    result = search_chunks(
+        "not exclusively a Torovian custom",
+        chunks,
+        _indexed_transcriber(
+            {
+                0: _transcription(
+                    ("not", 27.0, 27.3),
+                    ("exclusively", 27.4, 28.0),
+                    ("a", 28.1, 28.2),
+                ),
+                1: _transcription(
+                    ("exclusively", 2.4, 3.0),
+                    ("a", 3.1, 3.2),
+                    ("Taruvian", 3.3, 3.8),
+                    ("custom", 3.9, 4.3),
+                ),
+            },
+            calls,
+        ),
+        fuzzy_threshold=85.0,
+        overlap_seconds=5.0,
+        transcript_context_seconds=15.0,
+    )
+
+    assert result.match is not None
+    assert result.match.match_type == "fuzzy"
+    assert result.match.start == 27.0
+    assert calls == [0, 1]

@@ -5,7 +5,6 @@ import platform
 import sys
 import tempfile
 import time
-import wave
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,9 +40,11 @@ from experiments.audio_localization_baseline.runner import PeakRSSSampler, _writ
 from .chunking import AudioChunk, ChunkSearchResult, generate_chunks, search_chunks
 from .manifest import ChunkedASRConfig
 from .metrics import percentage_asr_audio_avoided, speedup_ratio, timestamp_delta
+from .reusable_audio import ReusableChunkTranscriber, ReusableWaveAudio
 
 
 Clock = Callable[[], float]
+MATCHING_LOGIC_ID = "dialogue_locator.matching.find_dialogue_candidates"
 
 
 @dataclass
@@ -52,7 +53,10 @@ class ChunkedObservation:
     asr_audio_seconds: list[float] = field(default_factory=list)
     acquisition_metadata: dict[str, Any] = field(default_factory=dict)
     media_info: MediaInfo | None = None
+    media_path: Path | None = None
     media_metadata_cache_hit: bool = False
+    audio_extraction_calls: int = 0
+    audio_extraction_wall_clock_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -77,7 +81,10 @@ def load_baseline_results(path: Path) -> dict[str, dict[str, Any]]:
     for index, case in enumerate(cases):
         if not isinstance(case, dict) or not isinstance(case.get("case_id"), str):
             raise ManifestError(f"Baseline results cases[{index}] has no valid case_id.")
-        indexed[case["case_id"]] = case
+        enriched = dict(case)
+        enriched["_benchmark_environment"] = payload.get("environment")
+        enriched["_matching_logic"] = payload.get("matching_logic")
+        indexed[case["case_id"]] = enriched
     return indexed
 
 
@@ -98,15 +105,12 @@ def run_chunked_benchmark(
     report = {
         "schema_version": 1,
         "benchmark": "chronological-overlapping-chunked-asr-early-stop",
+        "matching_logic": MATCHING_LOGIC_ID,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "manifest_path": str(manifest_path.resolve()),
         "baseline_results_path": str(baseline_results_path.resolve()),
         "chunked_asr": asdict(config),
-        "environment": {
-            "python": sys.version.split()[0],
-            "platform": platform.platform(),
-            "dialogue_locator_version": __version__,
-        },
+        "environment": _current_environment(),
         "cases": records,
     }
     _write_json_atomic(output_path, report)
@@ -162,6 +166,8 @@ def _run_case(
         match.start if match is not None else None,
         match.matched_text if match is not None else None,
         comparison,
+        target_verified=match is not None,
+        earliest_valid_occurrence=match is not None,
     )
     early_stop = (
         search_result is not None
@@ -174,15 +180,27 @@ def _run_case(
         match.start if match is not None else None,
         baseline_start,
     )
+    unique_coverage = (
+        search_result.processed_unique_audio_seconds if search_result is not None else 0.0
+    )
+    overlap_overhead = max(0.0, processed_audio - unique_coverage)
+    configuration_parity = benchmark_configuration_parity(
+        case,
+        baseline,
+        observation.media_path,
+    )
 
     return {
         "case_id": case.case_id,
         "url": case.url,
+        "media_path": str(observation.media_path) if observation.media_path is not None else None,
+        "source_page_url": case.source_page_url,
         "target": case.target,
         "status": "ok" if localization is not None else "error",
         "strategy": "chronological_chunked_asr_with_overlap_and_early_stopping",
         "chunk_duration_seconds": config.chunk_duration_seconds,
         "overlap_seconds": config.overlap_seconds,
+        "transcript_context_seconds": config.transcript_context_seconds,
         "total_wall_clock_seconds": total_wall_clock,
         "total_wall_clock_hms": format_timestamp(total_wall_clock),
         "asr_wall_clock_seconds": asr_wall_clock,
@@ -193,6 +211,13 @@ def _run_case(
         "audio_duration_hms": format_timestamp(audio_duration),
         "expensive_asr_audio_seconds_processed": processed_audio,
         "expensive_asr_audio_processed_hms": format_timestamp(processed_audio),
+        "unique_audio_coverage_seconds": unique_coverage,
+        "total_overlap_overhead_seconds": overlap_overhead,
+        "total_overlap_overhead_percentage": (
+            overlap_overhead / unique_coverage * 100.0 if unique_coverage > 0 else 0.0
+        ),
+        "audio_extraction_calls": observation.audio_extraction_calls,
+        "audio_extraction_wall_clock_seconds": observation.audio_extraction_wall_clock_seconds,
         "chunks_processed": search_result.processed_chunks if search_result is not None else 0,
         "chunks_total": total_chunks,
         "early_stop_triggered": early_stop,
@@ -215,7 +240,9 @@ def _run_case(
         "matched_text": match.matched_text if match is not None else None,
         "match_type": match.match_type if match is not None else None,
         "match_score": match.score if match is not None else None,
+        "fuzzy_threshold": case.fuzzy_threshold,
         "same_first_occurrence_as_baseline": same_first,
+        "baseline_configuration_parity": configuration_parity,
         "baseline_detected_timestamp_seconds": baseline_start,
         "baseline_expensive_asr_audio_seconds": baseline_audio,
         "percentage_asr_audio_avoided": percentage_asr_audio_avoided(
@@ -247,6 +274,56 @@ def _run_case(
     }
 
 
+def benchmark_configuration_parity(
+    case: BenchmarkCase,
+    baseline: dict[str, Any] | None,
+    optimized_media_path: Path | None,
+) -> dict[str, bool]:
+    """Verify that a baseline comparison changes only localization strategy."""
+    baseline_media = _optional_string(baseline, "media_path")
+    same_media = bool(
+        baseline_media
+        and optimized_media_path is not None
+        and Path(baseline_media).resolve() == optimized_media_path.resolve()
+    )
+    same_asr = bool(
+        baseline
+        and baseline.get("model") == case.model
+        and baseline.get("device") == case.device
+        and baseline.get("compute_type") == case.compute_type
+        and baseline.get("language") == case.language
+    )
+    same_input = bool(
+        baseline
+        and baseline.get("url") == case.url
+        and baseline.get("target") == case.target
+    )
+    same_matching = bool(
+        baseline
+        and baseline.get("_matching_logic") == MATCHING_LOGIC_ID
+        and _optional_number(baseline, "fuzzy_threshold") == case.fuzzy_threshold
+    )
+    same_environment = bool(
+        baseline and baseline.get("_benchmark_environment") == _current_environment()
+    )
+    checks = {
+        "media_identical": same_media,
+        "input_identical": same_input,
+        "asr_settings_identical": same_asr,
+        "matching_logic_and_threshold_identical": same_matching,
+        "hardware_environment_identical": same_environment,
+    }
+    return {**checks, "all_identical": all(checks.values())}
+
+
+def _current_environment() -> dict[str, str]:
+    return {
+        "python": sys.version.split()[0],
+        "platform": platform.platform(),
+        "dialogue_locator_version": __version__,
+    }
+
+
 class _NoChunkedMatch(Exception):
     def __init__(self, search: ChunkSearchResult, total_chunks: int) -> None:
         super().__init__("dialogue not found")
@@ -263,15 +340,23 @@ def _localize_chunked(
     clock: Clock,
 ) -> tuple[ChunkedLocalization, ChunkedObservation]:
     defaults = manifest.defaults
-    url = validate_public_url(case.url)
     tools = require_external_tools()
-    media_path, metadata = acquire_media(
-        url,
-        defaults.work_dir,
-        cookies_from_browser=defaults.cookies_from_browser,
-        cookie_file=defaults.cookies_file,
-    )
+    if case.local_media_path is not None:
+        url = case.url
+        media_path = case.local_media_path.resolve()
+        if not media_path.is_file():
+            raise V0Error(f"Controlled fixture media does not exist: {media_path}")
+        metadata = {"extractor": "local-fixture", "media_cache_hit": True}
+    else:
+        url = validate_public_url(case.url)
+        media_path, metadata = acquire_media(
+            url,
+            defaults.work_dir,
+            cookies_from_browser=defaults.cookies_from_browser,
+            cookie_file=defaults.cookies_file,
+        )
     observation.acquisition_metadata = dict(metadata)
+    observation.media_path = media_path
     media, metadata_cache_hit = pipeline._inspect_media_cached(
         media_path,
         tools.ffprobe,
@@ -283,11 +368,6 @@ def _localize_chunked(
     if media.duration is None or media.duration <= 0:
         raise V0Error("Chunked ASR requires a positive ffprobe media duration.")
 
-    chunks = generate_chunks(
-        media.duration,
-        config.chunk_duration_seconds,
-        config.overlap_seconds,
-    )
     resolved_model = resolve_model_name(case.model, case.language)
     transcriber = FasterWhisperTranscriber(
         model_name=resolved_model,
@@ -303,30 +383,46 @@ def _localize_chunked(
         ignore_cleanup_errors=True,
     ) as temporary:
         temporary_dir = Path(temporary)
-
-        def transcribe_chunk(chunk: AudioChunk) -> Transcription:
-            audio_path = extract_speech_audio(
-                media_path,
-                temporary_dir / f"chunk-{chunk.index:04d}.wav",
-                tools.ffmpeg,
-                start_time=chunk.start,
-                duration=chunk.duration,
-            )
-            audio_seconds = _wav_duration(audio_path)
-            asr_started = clock()
-            try:
-                return transcriber(audio_path)
-            finally:
-                observation.asr_wall_clock_seconds.append(max(0.0, clock() - asr_started))
-                observation.asr_audio_seconds.append(audio_seconds)
-
-        search = search_chunks(
-            case.target,
-            chunks,
-            transcribe_chunk,
-            fuzzy_threshold=case.fuzzy_threshold,
-            audio_start_offset=media.audio_start_time or 0.0,
+        extraction_started = clock()
+        full_audio_path = extract_speech_audio(
+            media_path,
+            temporary_dir / "full-audio.wav",
+            tools.ffmpeg,
         )
+        observation.audio_extraction_calls = 1
+        observation.audio_extraction_wall_clock_seconds = max(
+            0.0, clock() - extraction_started
+        )
+        with ReusableWaveAudio(full_audio_path) as audio_source:
+            chunks = generate_chunks(
+                audio_source.duration,
+                config.chunk_duration_seconds,
+                config.overlap_seconds,
+            )
+            reusable_transcriber = ReusableChunkTranscriber(transcriber, audio_source)
+
+            def transcribe_chunk(chunk: AudioChunk) -> Transcription:
+                audio_seconds = max(
+                    0.0,
+                    min(audio_source.duration, chunk.end)
+                    - min(audio_source.duration, chunk.start),
+                )
+                asr_started = clock()
+                try:
+                    return reusable_transcriber(chunk)
+                finally:
+                    observation.asr_wall_clock_seconds.append(max(0.0, clock() - asr_started))
+                    observation.asr_audio_seconds.append(audio_seconds)
+
+            search = search_chunks(
+                case.target,
+                chunks,
+                transcribe_chunk,
+                fuzzy_threshold=case.fuzzy_threshold,
+                audio_start_offset=media.audio_start_time or 0.0,
+                overlap_seconds=config.overlap_seconds,
+                transcript_context_seconds=config.transcript_context_seconds,
+            )
     if search.match is None:
         raise _NoChunkedMatch(search, len(chunks))
     frame = resolve_frame_at_timestamp(
@@ -371,11 +467,3 @@ def _optional_string(record: dict[str, Any] | None, key: str) -> str | None:
         return None
     value = record.get(key)
     return value if isinstance(value, str) else None
-
-
-def _wav_duration(path: Path) -> float:
-    with wave.open(str(path), "rb") as audio:
-        frame_rate = audio.getframerate()
-        if frame_rate <= 0:
-            raise ValueError(f"Invalid WAV frame rate in {path}.")
-        return audio.getnframes() / frame_rate

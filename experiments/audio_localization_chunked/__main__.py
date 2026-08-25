@@ -31,6 +31,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         help="Override manifest overlap in seconds",
     )
+    parser.add_argument(
+        "--transcript-context",
+        type=float,
+        help="Override carried adjacent-transcript context in seconds",
+    )
     return parser
 
 
@@ -42,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
             loaded.chunked_asr,
             chunk_duration_seconds=args.chunk_duration,
             overlap_seconds=args.overlap,
+            transcript_context_seconds=args.transcript_context,
         )
         baseline_results = load_baseline_results(args.baseline_results)
         report = run_chunked_benchmark(

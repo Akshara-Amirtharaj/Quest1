@@ -1,0 +1,170 @@
+{
+  "version": 1,
+  "benchmark_id": "frozen-full-asr-vs-chunked-120-5-15-v1",
+  "defaults": {
+    "work_dir": ".cache/media",
+    "output_dir": "experiments/audio_localization_frozen_matrix/results/frames",
+    "model_cache": ".cache/models",
+    "model": "base.en",
+    "device": "cpu",
+    "compute_type": "int8",
+    "language": "en",
+    "fuzzy_threshold": 85
+  },
+  "frozen_chunked_asr": {
+    "chunk_duration_seconds": 120,
+    "overlap_seconds": 5,
+    "transcript_context_seconds": 15
+  },
+  "cases": [
+    {
+      "id": "tears_beginning",
+      "source_kind": "public",
+      "url": "https://www.youtube.com/watch?v=R6MlUcmOul8",
+      "target": "You're a jerk, Thom.",
+      "expected_result": "MATCH",
+      "expected_timestamp": "00:00:23.000",
+      "tolerance_seconds": 3,
+      "modality": "spoken",
+      "ground_truth_type": "public-caption-reference",
+      "tags": ["medium", "beginning", "spoken", "captions", "early-stop"]
+    },
+    {
+      "id": "tears_early_middle",
+      "source_kind": "public",
+      "url": "https://www.youtube.com/watch?v=R6MlUcmOul8",
+      "target": "How's it looking, Barley?",
+      "expected_result": "MATCH",
+      "expected_timestamp": "00:03:17.000",
+      "tolerance_seconds": 3,
+      "modality": "spoken",
+      "ground_truth_type": "public-caption-reference",
+      "tags": ["medium", "early-middle", "spoken", "captions"]
+    },
+    {
+      "id": "tears_near_end",
+      "source_kind": "public",
+      "url": "https://www.youtube.com/watch?v=R6MlUcmOul8",
+      "target": "The world's changed, Celia",
+      "expected_result": "MATCH",
+      "expected_timestamp": "00:08:38.000",
+      "tolerance_seconds": 3,
+      "modality": "spoken",
+      "ground_truth_type": "public-caption-reference",
+      "tags": ["medium", "near-end", "spoken", "captions"]
+    },
+    {
+      "id": "tears_very_late",
+      "source_kind": "public",
+      "url": "https://www.youtube.com/watch?v=R6MlUcmOul8",
+      "target": "There's a lesson to be learned from this.",
+      "expected_result": "MATCH",
+      "expected_timestamp": "00:09:22.000",
+      "tolerance_seconds": 3,
+      "modality": "spoken",
+      "ground_truth_type": "public-caption-reference",
+      "tags": ["medium", "late", "spoken", "captions", "early-stop-worst-case"]
+    },
+    {
+      "id": "cs50_long_beginning",
+      "source_kind": "public",
+      "url": "https://www.youtube.com/watch?v=IDDmrzzB14M",
+      "target": "This is CS50, Harvard University's introduction to the intellectual enterprises of computer science and the arts of programming.",
+      "expected_result": "MATCH",
+      "expected_timestamp": "00:01:15.000",
+      "tolerance_seconds": 3,
+      "modality": "spoken",
+      "ground_truth_type": "public-caption-reference",
+      "tags": ["long", "beginning", "spoken", "captions", "early-stop", "high-performance-value"]
+    },
+    {
+      "id": "cs50_long_middle",
+      "source_kind": "public",
+      "url": "https://www.youtube.com/watch?v=IDDmrzzB14M",
+      "target": "This, in Scratch, is perhaps the simplest program you can write.",
+      "expected_result": "MATCH",
+      "expected_timestamp": "01:13:00.000",
+      "tolerance_seconds": 3,
+      "modality": "spoken",
+      "ground_truth_type": "public-caption-reference",
+      "tags": ["long", "middle", "spoken", "captions", "timestamp-offset"]
+    },
+    {
+      "id": "mit_repeated_good_morning",
+      "source_kind": "public",
+      "url": "https://www.youtube.com/watch?v=k6U-i4gXkLM",
+      "target": "Good morning.",
+      "expected_result": "MATCH",
+      "expected_timestamp": "00:00:18.000",
+      "tolerance_seconds": 3,
+      "modality": "spoken",
+      "ground_truth_type": "public-caption-reference-first-occurrence",
+      "tags": ["repeated", "beginning", "spoken", "captions", "short-target", "common-phrase", "first-occurrence"]
+    },
+    {
+      "id": "big_buck_bunny_visible_title",
+      "source_kind": "public",
+      "url": "https://commons.wikimedia.org/wiki/File:Big_Buck_Bunny_4K.webm",
+      "target": "BIG BUCK BUNNY",
+      "expected_result": "MATCH",
+      "expected_timestamp": "00:00:28.000",
+      "tolerance_seconds": 5,
+      "modality": "visible",
+      "ground_truth_type": "reference-interval-start-not-frame-ground-truth",
+      "tags": ["OCR", "visible-text", "non-audio", "full-pipeline"],
+      "applicable_strategies": ["ocr", "full_pipeline"]
+    },
+    {
+      "id": "fixture_no_captions_absent_long_silence",
+      "source_kind": "controlled",
+      "url": "fixture:fixture_no_captions_absent_long_silence",
+      "local_media_path": ".cache/benchmark-fixtures/fixture_no_captions_absent_long_silence.mp4",
+      "target": "The company reported revenue of twenty million dollars.",
+      "expected_result": "NO_MATCH",
+      "expected_timestamp": null,
+      "tolerance_seconds": null,
+      "modality": "spoken",
+      "ground_truth_type": "controlled-generated",
+      "tags": ["controlled", "no-captions", "absent", "long-silence", "no-match", "worst-case"]
+    },
+    {
+      "id": "fixture_noisy_speech",
+      "source_kind": "controlled",
+      "url": "fixture:fixture_noisy_speech",
+      "local_media_path": ".cache/benchmark-fixtures/fixture_noisy_speech.mp4",
+      "target": "The company reported revenue of twenty million dollars.",
+      "expected_result": "MATCH",
+      "expected_timestamp": "00:00:20.000",
+      "tolerance_seconds": 1.5,
+      "modality": "spoken",
+      "ground_truth_type": "controlled-generated",
+      "tags": ["controlled", "noise", "background-music", "spoken", "no-captions"]
+    },
+    {
+      "id": "fixture_chunk_boundary",
+      "source_kind": "controlled",
+      "url": "fixture:fixture_chunk_boundary",
+      "local_media_path": ".cache/benchmark-fixtures/fixture_chunk_boundary.mp4",
+      "target": "The company reported revenue of twenty million dollars.",
+      "expected_result": "MATCH",
+      "expected_timestamp": "00:01:58.500",
+      "tolerance_seconds": 1.5,
+      "modality": "spoken",
+      "ground_truth_type": "controlled-generated-derived-boundary",
+      "tags": ["controlled", "chunk-boundary", "overlap", "transcript-context", "first-occurrence"]
+    },
+    {
+      "id": "fixture_repeated_target",
+      "source_kind": "controlled",
+      "url": "fixture:fixture_repeated_target",
+      "local_media_path": ".cache/benchmark-fixtures/fixture_repeated_target.mp4",
+      "target": "The company reported revenue of twenty million dollars.",
+      "expected_result": "MATCH",
+      "expected_timestamp": "00:00:10.000",
+      "tolerance_seconds": 1.5,
+      "modality": "spoken",
+      "ground_truth_type": "controlled-generated-first-occurrence",
+      "tags": ["controlled", "repeated", "first-occurrence", "early-stop", "spoken"]
+    }
+  ]
+}

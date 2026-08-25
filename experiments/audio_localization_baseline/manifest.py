@@ -46,6 +46,7 @@ class BenchmarkDefaults:
 class BenchmarkCase:
     case_id: str
     url: str
+    source_page_url: str | None
     target: str
     model: str
     device: str
@@ -53,6 +54,7 @@ class BenchmarkCase:
     language: str | None
     fuzzy_threshold: float
     production_baseline: ProductionBaseline | None = None
+    local_media_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -133,11 +135,25 @@ def _parse_case(data: dict[str, Any], defaults: BenchmarkDefaults, index: int) -
             f"{prefix}.id must start with a letter or number and contain only letters, "
             "numbers, '.', '_' or '-'."
         )
+    local_media_path = (
+        _path(data["local_media_path"], f"{prefix}.local_media_path")
+        if data.get("local_media_path") is not None
+        else None
+    )
     url = _nonempty_string(data.get("url"), f"{prefix}.url")
-    try:
-        url = validate_public_url(url)
-    except V0Error as exc:
-        raise ManifestError(f"{prefix}.url: {exc}") from exc
+    if local_media_path is None:
+        try:
+            url = validate_public_url(url)
+        except V0Error as exc:
+            raise ManifestError(f"{prefix}.url: {exc}") from exc
+    source_page_url = _optional_string(
+        data.get("source_page_url"), f"{prefix}.source_page_url"
+    )
+    if source_page_url is not None:
+        try:
+            source_page_url = validate_public_url(source_page_url)
+        except V0Error as exc:
+            raise ManifestError(f"{prefix}.source_page_url: {exc}") from exc
     baseline_data = data.get("production_baseline")
     baseline = None
     if baseline_data is not None:
@@ -162,6 +178,7 @@ def _parse_case(data: dict[str, Any], defaults: BenchmarkDefaults, index: int) -
     return BenchmarkCase(
         case_id=case_id,
         url=url,
+        source_page_url=source_page_url,
         target=_nonempty_string(data.get("target"), f"{prefix}.target"),
         model=_nonempty_string(data.get("model", defaults.model), f"{prefix}.model"),
         device=_choice(
@@ -178,6 +195,7 @@ def _parse_case(data: dict[str, Any], defaults: BenchmarkDefaults, index: int) -
             maximum=100,
         ),
         production_baseline=baseline,
+        local_media_path=local_media_path,
     )
 
 

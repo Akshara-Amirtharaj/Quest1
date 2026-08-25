@@ -12,7 +12,7 @@ python -m experiments.audio_localization_baseline `
   --output experiments/audio_localization_baseline/results/full-asr-baseline.json
 ```
 
-The manifest owns all URLs, targets, model settings, paths, language hints, and expected production baselines. Add cases to the JSON rather than editing Python.
+The manifest owns all URLs, targets, model settings, paths, language hints, and expected production baselines. Add cases to the JSON rather than editing Python. When a publisher page embeds media hosted elsewhere, use `source_page_url` for the page supplied by the user and `url` for the downloadable embedded media; both are retained in the result for provenance.
 
 By default, `reuse_transcript_cache` is `false`: downloaded media, ffprobe metadata, and model files are still reused, but transcript-result caching is bypassed inside the experiment so ASR time is measured instead of hidden by a prior result. Set it to `true` to benchmark warm transcript-cache behavior; a cache hit then reports zero ASR calls and zero expensive ASR audio seconds.
 
@@ -26,6 +26,7 @@ The JSON report contains environment metadata and one structured record per case
 - `audio_duration_seconds`: duration of the generated mono 16 kHz baseline WAV.
 - `expensive_asr_audio_seconds_processed`: sum of WAV seconds supplied to actual faster-whisper calls. This is zero for a transcript-cache hit.
 - `detected_timestamp_seconds`, `matched_text`, `match_type`, and `match_score`: unchanged production result.
+- Each seconds-based timing above also has a parallel human-readable `*_hms` value in `HH:MM:SS.mmm` format; numeric seconds remain authoritative for benchmark calculations.
 - `first_occurrence_matches_production_baseline`: timestamp tolerance plus normalized detected-text comparison against the optional manifest reference; `null` if no reference is supplied.
 - `peak_rss_bytes`: best-effort peak RSS of the benchmark process and child processes, sampled through optional `psutil`; `null` if unavailable.
 - `fallback_used` and `fallback_reason`: currently records direct-HTTP acquisition or precision fallback. Full ASR itself is the selected baseline, not labeled as a fallback.

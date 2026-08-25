@@ -13,14 +13,20 @@
   },
   "cases": [
     {
-      "id": "visible-captions-full-asr",
-      "url": "https://www.youtube.com/watch?v=qzq_-plz0bQ",
-      "target": "captions like this",
-      "production_baseline": {
-        "dialogue_start_seconds": 2.16,
-        "timestamp_tolerance_seconds": 0.15,
-        "matched_text": "captions like this"
-      }
+      "id": "godtube-embedded-youtube-tear-drop-in-my-full-asr",
+      "source_page_url": "https://www.godtube.com/watch/?v=E1M0JJNU",
+      "url": "https://www.youtube.com/watch?v=iyLIIzxy0wY",
+      "target": "tear drop in my"
+    },
+    {
+      "id": "long-torovian-dialogue-90min",
+      "url": "https://www.youtube.com/watch?v=MaTIfXu_c-k",
+      "target": "Don't worry, that is not exclusively a Torovian custom"
+    },
+    {
+      "id": "long-pursuit-of-gold-86min",
+      "url": "https://www.youtube.com/watch?v=p9X242khWkQ",
+      "target": "It could prejudice someone against their pursuit of gold"
     }
   ]
 }

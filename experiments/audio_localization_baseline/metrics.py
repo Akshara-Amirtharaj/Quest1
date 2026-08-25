@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from dialogue_locator.matching import normalize_text
+from dialogue_locator.models import format_timestamp
 
 from .manifest import ProductionBaseline
 
@@ -12,6 +12,11 @@ class ASRCostMetrics:
     wall_clock_seconds: float
     expensive_audio_seconds_processed: float
     call_count: int
+
+
+def seconds_to_hms(seconds: float | None) -> str | None:
+    """Use the production timestamp format for human-readable benchmark durations."""
+    return format_timestamp(seconds)
 
 
 def calculate_asr_cost_metrics(
@@ -33,13 +38,22 @@ def first_occurrence_matches_baseline(
     detected_timestamp: float | None,
     matched_text: str | None,
     baseline: ProductionBaseline | None,
+    *,
+    target_verified: bool | None = None,
+    earliest_valid_occurrence: bool = True,
 ) -> bool | None:
+    """Compare occurrence identity by chronological verification and time.
+
+    ``matched_text`` remains part of the stable call signature because callers
+    report it as a diagnostic, but wording differences do not define occurrence
+    identity. Independent ASR runs can spell the same spoken phrase differently.
+    """
     if baseline is None:
         return None
-    if detected_timestamp is None:
+    verified = bool(matched_text) if target_verified is None else target_verified
+    if not verified or not earliest_valid_occurrence or detected_timestamp is None:
         return False
-    if abs(detected_timestamp - baseline.dialogue_start_seconds) > baseline.timestamp_tolerance_seconds:
-        return False
-    if baseline.matched_text is None:
-        return True
-    return normalize_text(matched_text or "") == normalize_text(baseline.matched_text)
+    return bool(
+        abs(detected_timestamp - baseline.dialogue_start_seconds)
+        <= baseline.timestamp_tolerance_seconds
+    )

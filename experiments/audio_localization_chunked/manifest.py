@@ -15,8 +15,9 @@ from experiments.audio_localization_baseline.manifest import (
 
 @dataclass(frozen=True)
 class ChunkedASRConfig:
-    chunk_duration_seconds: float = 10.0
-    overlap_seconds: float = 2.0
+    chunk_duration_seconds: float = 120.0
+    overlap_seconds: float = 5.0
+    transcript_context_seconds: float = 15.0
 
     def validate(self) -> ChunkedASRConfig:
         if not math.isfinite(self.chunk_duration_seconds) or self.chunk_duration_seconds <= 0:
@@ -26,6 +27,13 @@ class ChunkedASRConfig:
         if self.overlap_seconds >= self.chunk_duration_seconds:
             raise ManifestError(
                 "chunked_asr.overlap_seconds must be smaller than chunk_duration_seconds."
+            )
+        if (
+            not math.isfinite(self.transcript_context_seconds)
+            or self.transcript_context_seconds <= 0
+        ):
+            raise ManifestError(
+                "chunked_asr.transcript_context_seconds must be greater than zero."
             )
         return self
 
@@ -47,12 +55,16 @@ def load_chunked_manifest(path: Path) -> ChunkedBenchmarkManifest:
         raise ManifestError("'chunked_asr' must be a JSON object.")
     config = ChunkedASRConfig(
         chunk_duration_seconds=_number(
-            raw_config.get("chunk_duration_seconds", 10.0),
+            raw_config.get("chunk_duration_seconds", 120.0),
             "chunked_asr.chunk_duration_seconds",
         ),
         overlap_seconds=_number(
-            raw_config.get("overlap_seconds", 2.0),
+            raw_config.get("overlap_seconds", 5.0),
             "chunked_asr.overlap_seconds",
+        ),
+        transcript_context_seconds=_number(
+            raw_config.get("transcript_context_seconds", 15.0),
+            "chunked_asr.transcript_context_seconds",
         ),
     ).validate()
     return ChunkedBenchmarkManifest(baseline=baseline, chunked_asr=config)
@@ -63,6 +75,7 @@ def override_chunk_config(
     *,
     chunk_duration_seconds: float | None,
     overlap_seconds: float | None,
+    transcript_context_seconds: float | None = None,
 ) -> ChunkedASRConfig:
     return ChunkedASRConfig(
         chunk_duration_seconds=(
@@ -71,6 +84,11 @@ def override_chunk_config(
             else chunk_duration_seconds
         ),
         overlap_seconds=config.overlap_seconds if overlap_seconds is None else overlap_seconds,
+        transcript_context_seconds=(
+            config.transcript_context_seconds
+            if transcript_context_seconds is None
+            else transcript_context_seconds
+        ),
     ).validate()
 
 

@@ -1,36 +1,865 @@
 # AI and Coding-Assistant Prompts
 
-This file records prompts used to design or implement the repository. Prompts must be preserved verbatim when added; summaries must not be presented as original prompts.
+This file contains only prompts from the Codex task titled **“Implement V0 media localization.”** Prompts from the later manual-verification task are intentionally excluded.
 
-## Architecture/design prompts
+Prompts are preserved verbatim where captured. The initial V0 prompt was recovered from the original user-pasted attachment associated with that task rather than reconstructed from memory.
 
-No standalone architecture/design prompt has been recorded in this repository yet. The current Codex implementation prompt contained substantial architecture direction, but it was one combined prompt rather than a separate design session.
+## Initial architecture and V0 implementation prompt
 
-If a separate design prompt is used later, paste the exact text below this line before submission.
+```text
+I am building a software engineering assessment project for Quest1.
 
-<!-- Paste exact architecture/design prompts here, verbatim. -->
+You currently have no context about the project, so read this carefully before making any changes.
 
-## Codex implementation prompts
+Do not implement the entire application immediately.
 
-The V0 implementation was created from a single long prompt supplied in the Codex task on 2026-08-24. It begins with:
+First understand the complete problem and architecture, then implement only V0 as described at the end.
 
-> I am building a software engineering assessment project for Quest1.
->
-> You currently have no context about the project, so read this carefully before making any changes.
->
-> Do not implement the entire application immediately.
->
-> First understand the complete problem and architecture, then implement only V0 as described at the end.
+# Problem
 
-The prompt then defines the complete media-localization problem, evidence model, progressive caption/ASR/OCR strategy, V0-V4 plan, and the numbered V0 implementation requirements. This excerpt is a locator, **not** a claimed verbatim record of the complete prompt.
+Input:
 
-Before assessment submission, paste/export the complete original Codex task prompt verbatim below. It is intentionally not reconstructed from memory here, because doing so could fabricate or alter the actual prompt.
+* a publicly accessible video URL
+* a target dialogue string
 
-<!-- Paste the complete original Codex implementation prompt here, verbatim. -->
+The application must automatically find where that dialogue occurs in the media and return at minimum:
 
-## Maintenance rule
+* timestamp
+* frame number where applicable
+* extracted or detected dialogue text
+* corresponding video frame as an image
 
-For every future AI-assisted change, append the exact prompt, tool/assistant name, date, and the affected milestone. Do not rewrite old entries after the fact.
+The supplied assessment example uses:
+
+"My mind rebels at stagnation"
+
+but the implementation must not hardcode this dialogue, video URL, timestamp, FPS, duration, resolution, language or video provider.
+
+During evaluation, the interviewer may provide a completely different video URL and dialogue.
+
+The user or interviewer must not manually inspect the video to locate the dialogue.
+
+# Important interpretation
+
+This is primarily a media localization problem.
+
+The dialogue may be represented through different signals:
+
+* platform captions
+* embedded subtitle tracks
+* auto generated captions
+* spoken audio
+* burned in visible captions
+* multiple signals at once
+
+The application should use these signals intelligently.
+
+The goal is always correctness first, then optimization.
+
+# Evidence model
+
+Treat the available sources differently because they answer different questions.
+
+## Captions and subtitles
+
+Captions are cheap temporal evidence.
+
+They can help us quickly determine where a dialogue might occur.
+
+However, they are not guaranteed to match the actual speech.
+
+They may be:
+
+* incorrect
+* auto generated
+* paraphrased
+* translated
+* incomplete
+* mistimed
+* split differently
+* in the wrong language
+
+Therefore captions should not automatically be treated as ground truth for spoken dialogue.
+
+## Audio and ASR
+
+ASR provides evidence about what is actually spoken.
+
+For spoken dialogue, audio verification should ultimately establish whether the target phrase is present.
+
+## OCR
+
+OCR provides evidence about what is actually visible in video pixels.
+
+This is useful when dialogue appears as burned in text or when the requirement is specifically about visible dialogue.
+
+## Video frame timestamps
+
+Decoded frame presentation timestamps should be treated as the authoritative timing information for the video frames.
+
+Do not rely only on:
+
+frame = timestamp × FPS
+
+because videos may use variable frame rate.
+
+# Final intended strategy
+
+The architecture should use progressive evidence escalation.
+
+The general decision flow is:
+
+video URL + target dialogue
+
+→ acquire media
+
+→ inspect available streams and metadata
+
+→ inspect available captions and subtitles
+
+→ normalize target dialogue
+
+→ if useful captions exist:
+search captions using exact or normalized matching
+then fuzzy matching if required
+
+→ if caption candidate exists:
+treat it as a candidate region only
+extract a small audio window around that region
+run ASR on that small audio window
+verify whether the actual spoken dialogue matches
+
+→ if caption verification fails:
+try the next chronological caption candidate
+
+→ if all caption candidates fail:
+run ASR on the full audio
+
+→ if captions do not exist:
+directly use full audio ASR
+
+→ locate the target phrase in the timestamped ASR output
+
+→ determine the estimated start time of the target dialogue
+
+→ resolve that timestamp to the actual video frame using decoded frame PTS
+
+→ extract and save the frame
+
+→ return structured output
+
+# Why captions are still useful
+
+Do not always transcribe the entire video if captions already tell us where to look.
+
+Example:
+
+A 60 minute video contains a caption candidate around:
+
+42:15 → 42:18
+
+Instead of transcribing the entire 60 minute audio:
+
+* extract perhaps 42:12 → 42:21
+* run ASR only on that short audio region
+* verify the target dialogue
+
+If verification succeeds, continue with frame resolution.
+
+This gives us correctness without unnecessary full video ASR.
+
+# Spoken dialogue definition
+
+If the target dialogue exists only in audio, define the final frame as:
+
+The earliest decoded video frame whose presentation timestamp is greater than or equal to the estimated start timestamp of the first word of the matched spoken dialogue.
+
+Important:
+
+The video frame timing may be precise, but the ASR speech onset is still an estimate.
+
+Do not pretend ASR timestamps are perfect ground truth.
+
+# Visible dialogue definition
+
+If the target dialogue is visually present in the video, define the final frame as:
+
+The earliest decoded frame in which the complete target dialogue satisfies the accepted OCR match condition.
+
+ASR or subtitles may help locate the candidate interval.
+
+OCR should establish when visible text actually appears.
+
+# Target dialogue matching
+
+The supplied target may not exactly equal ASR, subtitle or OCR output.
+
+Handle cases such as:
+
+* capitalization
+* punctuation
+* whitespace
+* contractions
+* minor ASR errors
+* minor OCR errors
+* dialogue split across chunks
+* target text itself being slightly inaccurate
+
+Use simple reliable matching first.
+
+Intended later strategy:
+
+1. Unicode and text normalization
+2. exact match
+3. substring match
+4. fuzzy matching using RapidFuzz
+5. small sliding windows over neighbouring words or subtitle chunks
+
+Do not use embeddings or LLM based semantic matching unless later testing proves it necessary.
+
+# Intended technology stack
+
+Use mature existing tools wherever possible.
+
+Do not reimplement solved problems.
+
+Primary choices:
+
+* Python
+* yt-dlp for media acquisition and platform metadata
+* FFmpeg for audio and media processing
+* ffprobe for stream inspection
+* PyAV for video decoding, seeking and PTS based frame handling
+* faster-whisper for ASR
+* WhisperX only as an optional precision fallback later
+* RapidFuzz for fuzzy text matching
+* PaddleOCR later for visible text verification
+* pytest for tests
+
+Possible subtitle parsing library:
+
+* pysubs2 or another lightweight mature parser if needed
+
+Do not introduce a dependency unless it provides clear value.
+
+# ASR strategy
+
+Default later ASR:
+
+faster-whisper
+
+Use it because it provides:
+
+* strong transcription
+* local execution
+* word timestamps
+* good CPU and GPU performance
+* simpler installation than a heavier alignment pipeline
+
+WhisperX should not be mandatory.
+
+Use WhisperX only if later testing shows that higher precision first word alignment is genuinely required.
+
+# Audio optimization
+
+When ASR is required, prefer speech appropriate audio such as:
+
+* mono
+* approximately 16 kHz
+* model compatible format
+
+Do not preserve unnecessarily high bitrate stereo audio just for speech recognition.
+
+During early development, temporary WAV files are acceptable because they are easy to inspect and debug.
+
+Later, piping audio directly may be considered if it materially improves performance.
+
+# OCR strategy
+
+Do not implement OCR yet.
+
+Later use a pretrained OCR system such as PaddleOCR.
+
+Do not:
+
+* train an OCR model
+* OCR every frame
+* assume subtitles always appear at the bottom
+* use a vision LLM for every frame
+
+OCR should normally operate only near an already localized candidate interval.
+
+If no other temporal evidence exists, use coarse to fine frame sampling.
+
+# Frame handling
+
+Use PyAV as the authoritative frame timing layer.
+
+Use:
+
+* frame PTS
+* stream time base
+* decoded frame presentation timestamp
+
+Do not assume constant frame rate.
+
+Do not decode the entire video from the beginning when a candidate timestamp is already known.
+
+Later, seek close to the candidate region and decode only a small interval.
+
+# Media quality optimization
+
+Do not automatically download the highest available video resolution.
+
+Choose a practical media format that balances:
+
+* sufficient visual quality
+* sufficient audio quality
+* download size
+* decode cost
+* later OCR requirements
+
+Prefer approximately 720p when appropriate.
+
+Do not hardcode 720p as a requirement.
+
+If 720p is unavailable, select an appropriate fallback.
+
+If later OCR requires better visual quality, higher quality may be selected adaptively.
+
+# Optimization principle
+
+At every stage ask:
+
+* can this work be avoided
+* can a cheaper signal narrow the search first
+* can we process a smaller time window
+* can we seek instead of decoding sequentially
+* can we reuse an existing artifact
+* can a mature library solve this already
+* can a heavy model be loaded only when required
+
+Optimize primarily by eliminating unnecessary work.
+
+Do not prematurely micro optimize Python code.
+
+# No database
+
+Do not add a database.
+
+The current application is:
+
+video URL + dialogue
+→ process
+→ result
+
+It is stateless.
+
+Temporary local artifacts are sufficient.
+
+Possible directories:
+
+.cache/
+output/
+
+A database would only become justified if future requirements include:
+
+* users
+* processing history
+* persistent jobs
+* analytics
+* shared caching
+* distributed workers
+
+Do not add:
+
+* PostgreSQL
+* MongoDB
+* Redis
+
+# Do not add unnecessary architecture
+
+Do not introduce:
+
+* microservices
+* message queues
+* Kubernetes
+* cloud services
+* distributed workers
+* LLM agents
+* embeddings
+* vector databases
+* custom OCR models
+* custom ASR models
+* custom edit distance implementations
+
+This should remain a small modular Python application.
+
+# Intended internal architecture
+
+The final application may eventually contain responsibilities such as:
+
+media acquisition
+media inspection
+subtitle processing
+audio extraction
+ASR
+OCR
+text normalization
+dialogue matching
+candidate selection
+frame resolution
+result formatting
+
+Do not turn all of these into classes automatically.
+
+Use functions and dataclasses where sufficient.
+
+Introduce interfaces only where replaceability genuinely helps.
+
+# Common candidate representation
+
+Later evidence providers should ideally produce a common structure similar to:
+
+Candidate
+
+* text
+* start_time
+* end_time
+* source
+* score
+* verified
+* verification_source
+
+Do not overdesign this yet.
+
+Final Result may eventually contain:
+
+* matched_text
+* timestamp
+* frame_index
+* frame_path
+* confidence
+* sources
+
+# Confidence strategy
+
+Do not invent arbitrary mathematical confidence formulas.
+
+Prefer simple categories such as:
+
+HIGH
+MEDIUM
+LOW
+
+and preserve underlying raw scores separately.
+
+Examples:
+
+HIGH
+caption candidate + strong ASR verification
+
+MEDIUM
+strong ASR only
+
+LOW
+weak ASR or conflicting evidence
+
+Do not implement this fully yet.
+
+# Important failure cases for later
+
+The architecture should eventually tolerate:
+
+* invalid URL
+* inaccessible media
+* expired URL
+* missing video stream
+* missing audio
+* no captions
+* incorrect captions
+* wrong subtitle language
+* multiple subtitle tracks
+* commentary or SDH subtitles
+* background music
+* multiple speakers
+* poor audio quality
+* repeated dialogue
+* inaccurate target dialogue
+* variable frame rate
+* non zero media timestamps
+* no match
+* multiple possible matches
+* low confidence results
+
+Do not attempt to solve every one of these in V0.
+
+# Development plan
+
+We will build incrementally.
+
+## V0 — media foundation
+
+Goal:
+
+Prove that we can reliably acquire and inspect media and decode a frame.
+
+## V1 — first complete working solution
+
+media
+→ full audio ASR using faster-whisper
+→ target dialogue matching
+→ candidate speech timestamp
+→ PyAV frame resolution
+→ frame image
+→ required output
+
+This gives us the first complete working application.
+
+## V2 — caption optimization
+
+caption discovery
+→ caption search
+→ candidate interval
+→ short-window ASR verification
+→ full ASR fallback
+
+This reduces unnecessary transcription.
+
+## V3 — visible text support
+
+candidate interval
+→ local video decoding
+→ PaddleOCR
+→ first complete visible match
+
+Also add coarse OCR fallback if needed.
+
+## V4 — hardening
+
+Possible additions:
+
+* WhisperX alignment
+* confidence handling
+* lightweight caching
+* adaptive resolution
+* stronger edge case handling
+* multiple occurrence support
+* multilingual handling
+
+Do not implement V1, V2, V3 or V4 now.
+
+# CURRENT TASK
+
+Implement only V0.
+
+Do not proceed to later milestones automatically.
+
+# V0 requirements
+
+## 1. Project structure
+
+Create a small Python project structure suitable for later expansion.
+
+Keep it clean and minimal.
+
+Example direction only:
+
+src/
+main.py
+media/
+acquisition.py
+inspection.py
+frames.py
+models/
+media_info.py
+
+tests/
+output/
+README.md
+requirements.txt
+prompts.md
+
+You may improve this structure if there is a simpler sensible option.
+
+Do not overengineer it.
+
+## 2. CLI input
+
+Accept a publicly accessible video URL.
+
+A CLI is sufficient.
+
+Do not build a frontend or API.
+
+## 3. Media acquisition
+
+Use yt-dlp.
+
+The media acquisition layer should:
+
+* obtain useful platform metadata
+* select practical media quality
+* avoid automatically selecting maximum resolution
+* prefer around 720p when appropriate
+* gracefully fall back
+* retain good enough audio for future ASR
+* avoid duplicate downloads during one execution
+
+Use a sensible yt-dlp format selection expression rather than custom format-selection algorithms unless necessary.
+
+## 4. Media inspection
+
+Use ffprobe.
+
+Use structured JSON output.
+
+Extract at minimum:
+
+* duration
+* video stream exists
+* audio stream exists
+* subtitle stream exists
+* width
+* height
+* video codec
+* audio codec
+* average frame rate metadata
+* real frame rate metadata if available
+* stream time base
+* stream start time where available
+
+Represent missing metadata safely.
+
+## 5. Caption discovery
+
+Use yt-dlp metadata where possible to determine:
+
+* manually available subtitles
+* automatic captions
+* available languages
+* useful track metadata
+
+Do not match captions yet.
+
+Do not run ASR.
+
+Do not run OCR.
+
+## 6. Decode sample frame
+
+Use PyAV.
+
+Open the acquired video and decode at least one sample video frame.
+
+Capture:
+
+* sequential decoded frame index
+* frame PTS
+* frame time base
+* presentation timestamp
+
+Do not use frame index × FPS as the authoritative timestamp.
+
+## 7. Save sample frame
+
+Save the decoded sample frame to the output directory.
+
+Use PNG or JPEG.
+
+The goal is simply to prove that video decoding and image extraction work.
+
+## 8. Structured result
+
+Print or return a structured JSON style V0 result containing at minimum:
+
+* source_url
+* media_path
+* duration
+* has_video
+* has_audio
+* embedded_subtitles
+* platform_subtitles
+* automatic_captions
+* available_caption_languages
+* width
+* height
+* video_codec
+* audio_codec
+* avg_frame_rate
+* real_frame_rate
+* video_time_base
+* video_start_time
+* sample_frame_index
+* sample_frame_pts
+* sample_frame_timestamp
+* sample_frame_path
+
+Keep the representation understandable.
+
+## 9. Dependency checks
+
+Before processing, check important external dependencies such as:
+
+* ffmpeg
+* ffprobe
+
+Provide a clear error if they are unavailable.
+
+Do not silently fail.
+
+## 10. Error handling
+
+Handle cleanly:
+
+* invalid URL
+* yt-dlp failure
+* unsupported source
+* network failure
+* ffprobe failure
+* missing video stream
+* PyAV failure
+* frame decode failure
+* output directory failure
+
+Use clear errors.
+
+Do not create an excessive custom exception hierarchy.
+
+## 11. Tests
+
+Add meaningful tests for deterministic V0 logic.
+
+Tests should not all require a network connection.
+
+Consider unit tests for:
+
+* ffprobe JSON parsing
+* missing audio/video fields
+* rational frame rate parsing
+* timestamp conversion
+* caption metadata normalization
+* missing metadata
+
+If appropriate, include a separate optional integration test for a real video URL.
+
+Do not make the normal test suite download a large video.
+
+## 12. README
+
+Document:
+
+* actual project problem
+* architecture direction
+* what V0 implements
+* prerequisites
+* Python setup
+* yt-dlp requirement
+* FFmpeg/ffprobe requirement
+* how to run V0
+* expected output
+* output directories
+* current limitations
+* V1 to V4 overview
+
+Keep the README concise but sufficient for another engineer to run the project.
+
+## 13. Prompt documentation
+
+Quest1 explicitly requires the prompts used with LLMs/coding assistants to be documented in the GitHub repository.
+
+Create:
+
+prompts.md
+
+Do not fabricate prompts that were used before this.
+
+Add a clear section for:
+
+* architecture/design prompts
+* Codex implementation prompts
+
+You may either include this exact Codex prompt or create a clearly marked section where I can paste the exact original prompt manually.
+
+Preserve prompts verbatim if they are added.
+
+## 14. Verification
+
+After implementation:
+
+* run the unit tests
+* run the CLI
+* if network access is available, test against the supplied sample video
+* verify yt-dlp acquisition
+* verify ffprobe output
+* verify caption discovery
+* verify PyAV frame decoding
+* verify the saved frame exists
+* inspect whether timing fields are populated correctly
+
+Do not claim a test succeeded if you could not execute it.
+
+Clearly mention environmental restrictions.
+
+## 15. Before modifying code
+
+First inspect the current repository.
+
+If files already exist:
+
+* understand the current structure
+* preserve working code
+* avoid unnecessary rewrites
+* do not delete unrelated files
+* adapt the implementation to what is already present
+
+Do not assume the repository is empty.
+
+## 16. Coding quality
+
+Keep the code:
+
+* readable
+* typed where useful
+* modular
+* testable
+* easy to explain in an interview
+
+Avoid:
+
+* giant functions
+* excessive classes
+* clever abstractions
+* unnecessary dependencies
+* premature optimization
+
+Add comments only where the reasoning is not obvious.
+
+## 17. Final response
+
+After V0 is fully implemented, report:
+
+1. files created
+2. files modified
+3. V0 architecture
+4. dependencies added
+5. commands required to run it
+6. tests executed
+7. test results
+8. sample execution result if available
+9. any source/media problems encountered
+10. assumptions made
+11. limitations remaining
+12. what V1 should implement next
+
+Most importantly:
+
+Do not proceed to V1.
+
+Stop after V0 is implemented, tested and verified.
+```
+
+## Subsequent implementation prompts from the same task
 
 ### 2026-08-24 - Codex - V0 direct HTTP acquisition fallback
 
@@ -847,24 +1676,3 @@ For every future AI-assisted change, append the exact prompt, tool/assistant nam
 > - remaining limitations
 >
 > Do not add any new milestone after V4.
-
-### 2026-08-25 - Codex - V4 verification
-
-> v4 is implemented, can we check that
-
-### 2026-08-25 - Codex - Cached-provider failure fix
-
-> can you fix and run it
-
-Context for this prompt was the immediately preceding BitChute terminal output: the first run was manually interrupted during full-audio ASR, and the next run reported the provider video unavailable even though the media file had already downloaded.
-
-### 2026-08-25 - Codex - Pipeline completeness review
-
-> have we implemented the below pipeline or is our existing implementation iss better and added even more better methods or optimisation techniques?? check if we're missing smth
-
-The prompt included the proposed acquisition → metadata → caption → short-window/full-ASR → OCR/WhisperX → PTS-frame pipeline diagram.
-
-### 2026-08-25 - Codex - Public repository checkpoint
-
-> can we push whatever we did till now to github and then start optimizing?
-> make sure our folder is in the required format

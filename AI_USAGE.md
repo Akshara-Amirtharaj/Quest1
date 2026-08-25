@@ -20,7 +20,7 @@ The developer directed milestone scope, supplied manual test inputs, reviewed pr
 
 ## Prompt record
 
-The recorded prompt history is maintained in [prompts.md](prompts.md). It preserves prompts verbatim where they were captured. Any explicitly marked locator or missing-original section is disclosed rather than reconstructed from memory.
+The recorded prompt history is maintained in [prompts.md](prompts.md). It contains only prompts from the Codex task titled **“Implement V0 media localization,”** including the complete original V0 prompt recovered from its user-pasted attachment and the subsequent V1–V4 implementation prompts from that same task. Prompts from the later manual-verification task are intentionally excluded at the developer's request.
 
 ## Verification responsibility
 

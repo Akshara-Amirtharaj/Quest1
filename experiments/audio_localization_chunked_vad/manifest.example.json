@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "defaults": {
+    "work_dir": ".cache/media",
+    "output_dir": "experiments/audio_localization_chunked_vad/results/frames",
+    "model_cache": ".cache/models",
+    "model": "base.en",
+    "device": "cpu",
+    "compute_type": "int8",
+    "language": "en",
+    "fuzzy_threshold": 85,
+    "reuse_transcript_cache": false
+  },
+  "chunked_asr": {
+    "chunk_duration_seconds": 8,
+    "overlap_seconds": 2
+  },
+  "vad": {
+    "threshold": 0.35,
+    "neg_threshold": 0.20,
+    "min_speech_duration_ms": 0,
+    "min_silence_duration_ms": 1000,
+    "speech_pad_ms": 500,
+    "clear_silence_rms_threshold": 0.002,
+    "max_removed_fraction_before_fallback": 0.98,
+    "fallback_on_no_match": true,
+    "fallback_on_baseline_mismatch": true
+  },
+  "cases": [
+    {
+      "id": "visible-captions-full-asr",
+      "url": "https://www.youtube.com/watch?v=qzq_-plz0bQ",
+      "target": "captions like this",
+      "production_baseline": {
+        "dialogue_start_seconds": 2.16,
+        "timestamp_tolerance_seconds": 0.15,
+        "matched_text": "captions like this"
+      }
+    }
+  ]
+}

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import tempfile
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from importlib.metadata import PackageNotFoundError, version
 from importlib.util import find_spec
 from pathlib import Path
@@ -24,6 +24,11 @@ from .inspection import inspect_media
 from .matching import DEFAULT_FUZZY_THRESHOLD, find_dialogue_candidates, normalize_text
 from .models import CaptionCandidate, CaptionTrack, DialogueMatch, MediaInfo, ResolvedFrame, Transcription, V0Result, V1Result, V3Result
 from .ocr import OCRReader, PADDLE_MODEL_DESCRIPTION, PaddleOCRReader, find_first_visible_frame
+from .precision import (
+    DEFAULT_PRECISION_MODEL,
+    DEFAULT_PRECISION_TRIGGER_THRESHOLD,
+    PrecisionFallbackTranscriber,
+)
 from .subtitles import (
     SubtitleRateLimitError,
     download_subtitle,
@@ -36,6 +41,7 @@ from .transcription import (
     FasterWhisperTranscriber,
     OptionalWhisperXTranscriber,
     WhisperXAligner,
+    language_base,
     resolve_model_name,
 )
 
@@ -91,10 +97,24 @@ def run_v1(
     cookies_from_browser: str | None = None,
     cookie_file: Path | None = None,
     precision_mode: str = "default",
+    asr_precision_fallback: bool = True,
+    precision_asr_model: str = DEFAULT_PRECISION_MODEL,
+    precision_trigger_threshold: float = DEFAULT_PRECISION_TRIGGER_THRESHOLD,
+    full_audio_precision_fallback: bool = False,
 ) -> V1Result:
     url = validate_public_url(url)
     if not query.strip():
         raise V0Error("Target dialogue cannot be empty.")
+    if not precision_asr_model.strip():
+        raise ValueError("precision_asr_model cannot be empty")
+    if not 0 <= precision_trigger_threshold <= fuzzy_threshold:
+        raise ValueError(
+            "precision_trigger_threshold must be between 0 and the match threshold"
+        )
+    if full_audio_precision_fallback and not asr_precision_fallback:
+        raise ValueError(
+            "full_audio_precision_fallback requires asr_precision_fallback"
+        )
     tools = require_external_tools()
     media_path, _ = acquire_media(
         url,
@@ -106,7 +126,7 @@ def run_v1(
     media, metadata_cache_hit = _inspect_media_cached(media_path, tools.ffprobe, cache_root)
     _require_audio_video(media)
     resolved_model = resolve_model_name(model_name, language)
-    transcriber = _create_transcriber(
+    base_transcriber = _create_transcriber(
         resolved_model,
         model_cache,
         device,
@@ -115,6 +135,27 @@ def run_v1(
         precision_mode,
         cache_root,
     )
+    transcriber: Transcriber = base_transcriber
+    if (
+        asr_precision_fallback
+        and full_audio_precision_fallback
+        and _supports_precision_fallback(resolved_model, language)
+    ):
+        transcriber = _precision_fallback_transcriber(
+            query=query,
+            fuzzy_threshold=fuzzy_threshold,
+            base_transcriber=base_transcriber,
+            base_model_name=resolved_model,
+            precision_model_name=precision_asr_model,
+            precision_trigger_threshold=precision_trigger_threshold,
+            model_cache=model_cache,
+            device=device,
+            compute_type=compute_type,
+            language=language,
+            precision_mode=precision_mode,
+            cache_root=cache_root,
+            scope="full_audio",
+        )
     return _localize_full_audio(
         url,
         query,
@@ -164,7 +205,42 @@ def run_v2(
     subtitle_cache_dir = work_dir / "captions" / media_path.stem
     resolved_model = resolve_model_name(model_name, language)
 
-    transcriber: Transcriber | None = None
+    base_transcriber: CachedTranscriber | None = None
+    caption_transcriber: Transcriber | None = None
+    precision_transcriber: CachedTranscriber | None = None
+
+    def get_base_transcriber() -> CachedTranscriber:
+        nonlocal base_transcriber
+        if base_transcriber is None:
+            base_transcriber = _create_transcriber(
+                resolved_model,
+                model_cache,
+                device,
+                compute_type,
+                language,
+                precision_mode,
+                cache_root,
+            )
+        return base_transcriber
+
+    def get_precision_transcriber() -> CachedTranscriber:
+        nonlocal precision_transcriber
+        if precision_transcriber is None:
+            precision_transcriber = _create_transcriber(
+                config.precision_asr_model,
+                model_cache,
+                device,
+                compute_type,
+                language,
+                precision_mode,
+                cache_root,
+            )
+        return precision_transcriber
+
+    precision_enabled = config.asr_precision_fallback and _supports_precision_fallback(
+        resolved_model,
+        language,
+    )
     attempted_audio_seconds = 0.0
     with tempfile.TemporaryDirectory(
         prefix="v2-", dir=work_dir, ignore_cleanup_errors=True
@@ -190,15 +266,21 @@ def run_v2(
                 break
             if not candidates:
                 continue
-            if transcriber is None:
-                transcriber = _create_transcriber(
-                    resolved_model,
-                    model_cache,
-                    device,
-                    compute_type,
-                    language,
-                    precision_mode,
-                    cache_root,
+            if caption_transcriber is None:
+                base = get_base_transcriber()
+                caption_transcriber = (
+                    PrecisionFallbackTranscriber(
+                        query=query,
+                        fuzzy_threshold=config.verification_fuzzy_threshold,
+                        precision_trigger_threshold=config.precision_trigger_threshold,
+                        base_transcriber=base,
+                        base_model_name=resolved_model,
+                        precision_transcriber_factory=get_precision_transcriber,
+                        precision_model_name=config.precision_asr_model,
+                        scope="candidate_window",
+                    )
+                    if precision_enabled
+                    else base
                 )
             verification, source_audio_seconds = verify_caption_candidates(
                 candidates,
@@ -208,13 +290,17 @@ def run_v2(
                 media.audio_start_time or 0.0,
                 temporary_dir,
                 tools.ffmpeg,
-                transcriber,
+                caption_transcriber,
                 config,
             )
             attempted_audio_seconds += source_audio_seconds
             if verification is not None:
                 frame = resolve_frame_at_timestamp(media_path, verification.match.start, output_dir)
-                provenance = _transcriber_provenance(transcriber)
+                provenance = _transcriber_provenance(
+                    caption_transcriber,
+                    resolved_model,
+                    verification.match.score,
+                )
                 return V1Result(
                     url,
                     media_path,
@@ -234,23 +320,34 @@ def run_v2(
                         config.verification_fuzzy_threshold,
                     ),
                     occurrences=(verification.match,),
-                    transcription_language=provenance[0],
-                    alignment_source=provenance[1],
+                    transcription_language=provenance.language,
+                    alignment_source=provenance.alignment_source,
                     precision_mode=precision_mode,
-                    precision_fallback_reason=provenance[2],
-                    transcript_cache_hit=provenance[3],
+                    precision_fallback_reason=provenance.fallback_reason,
+                    transcript_cache_hit=provenance.cache_hit,
                     media_metadata_cache_hit=metadata_cache_hit,
+                    asr_model_used=provenance.asr_model_used,
+                    precision_fallback_used=provenance.precision_fallback_used,
+                    precision_scope=provenance.precision_scope,
+                    base_match_score=provenance.base_match_score,
+                    precision_match_score=provenance.precision_match_score,
+                    precision_trigger_threshold=provenance.precision_trigger_threshold,
+                    precision_fallback_eligible=provenance.precision_fallback_eligible,
+                    precision_fallback_skip_reason=provenance.precision_fallback_skip_reason,
                 )
 
-    if transcriber is None:
-        transcriber = _create_transcriber(
-            resolved_model,
-            model_cache,
-            device,
-            compute_type,
-            language,
-            precision_mode,
-            cache_root,
+    base = get_base_transcriber()
+    transcriber: Transcriber = base
+    if precision_enabled and config.full_audio_precision_fallback:
+        transcriber = PrecisionFallbackTranscriber(
+            query=query,
+            fuzzy_threshold=config.verification_fuzzy_threshold,
+            precision_trigger_threshold=config.precision_trigger_threshold,
+            base_transcriber=base,
+            base_model_name=resolved_model,
+            precision_transcriber_factory=get_precision_transcriber,
+            precision_model_name=config.precision_asr_model,
+            scope="full_audio",
         )
     fallback = _localize_full_audio(
         url,
@@ -472,6 +569,10 @@ def _localize_full_audio(
     processed_seconds = media.duration
     if processed_seconds is None and transcription.words:
         processed_seconds = transcription.words[-1].end
+    asr_call_count = max(1, int(getattr(transcriber, "last_asr_call_count", 1)))
+    if processed_seconds is not None:
+        processed_seconds *= asr_call_count
+    provenance = _transcriber_provenance(transcriber, model_name, match.score)
     return V1Result(
         url,
         media_path,
@@ -484,9 +585,17 @@ def _localize_full_audio(
         transcription_language=transcription.language,
         alignment_source=transcription.alignment_source,
         precision_mode=precision_mode,
-        precision_fallback_reason=transcription.precision_fallback_reason,
-        transcript_cache_hit=bool(getattr(transcriber, "last_cache_hit", False)),
+        precision_fallback_reason=provenance.fallback_reason,
+        transcript_cache_hit=provenance.cache_hit,
         media_metadata_cache_hit=metadata_cache_hit,
+        asr_model_used=provenance.asr_model_used,
+        precision_fallback_used=provenance.precision_fallback_used,
+        precision_scope=provenance.precision_scope,
+        base_match_score=provenance.base_match_score,
+        precision_match_score=provenance.precision_match_score,
+        precision_trigger_threshold=provenance.precision_trigger_threshold,
+        precision_fallback_eligible=provenance.precision_fallback_eligible,
+        precision_fallback_skip_reason=provenance.precision_fallback_skip_reason,
     )
 
 
@@ -529,6 +638,45 @@ def _create_transcriber(
     return CachedTranscriber(transcriber, JsonFileCache(cache_root), identity)
 
 
+def _precision_fallback_transcriber(
+    *,
+    query: str,
+    fuzzy_threshold: float,
+    base_transcriber: Transcriber,
+    base_model_name: str,
+    precision_model_name: str,
+    precision_trigger_threshold: float,
+    model_cache: Path,
+    device: str,
+    compute_type: str,
+    language: str | None,
+    precision_mode: str,
+    cache_root: Path,
+    scope: str,
+) -> PrecisionFallbackTranscriber:
+    def create_precision_transcriber() -> CachedTranscriber:
+        return _create_transcriber(
+            precision_model_name,
+            model_cache,
+            device,
+            compute_type,
+            language,
+            precision_mode,
+            cache_root,
+        )
+
+    return PrecisionFallbackTranscriber(
+        query=query,
+        fuzzy_threshold=fuzzy_threshold,
+        precision_trigger_threshold=precision_trigger_threshold,
+        base_transcriber=base_transcriber,
+        base_model_name=base_model_name,
+        precision_transcriber_factory=create_precision_transcriber,
+        precision_model_name=precision_model_name,
+        scope=scope,
+    )
+
+
 def _inspect_media_cached(
     media_path: Path,
     ffprobe: str,
@@ -541,18 +689,63 @@ def _inspect_media_cached(
     )
 
 
+@dataclass(frozen=True)
+class _TranscriberProvenance:
+    language: str | None
+    alignment_source: str
+    fallback_reason: str | None
+    cache_hit: bool
+    asr_model_used: str
+    precision_fallback_used: bool
+    precision_scope: str | None
+    base_match_score: float | None
+    precision_match_score: float | None
+    precision_trigger_threshold: float | None
+    precision_fallback_eligible: bool | None
+    precision_fallback_skip_reason: str | None
+
+
 def _transcriber_provenance(
     transcriber: Transcriber,
-) -> tuple[str | None, str, str | None, bool]:
+    default_model: str,
+    accepted_match_score: float,
+) -> _TranscriberProvenance:
     transcription = getattr(transcriber, "last_transcription", None)
     if transcription is None:
-        return None, "faster-whisper", None, False
-    return (
+        return _TranscriberProvenance(
+            None,
+            "faster-whisper",
+            getattr(transcriber, "precision_fallback_reason", None),
+            False,
+            str(getattr(transcriber, "asr_model_used", default_model)),
+            bool(getattr(transcriber, "precision_fallback_used", False)),
+            getattr(transcriber, "precision_scope", None),
+            getattr(transcriber, "base_match_score", accepted_match_score),
+            getattr(transcriber, "precision_match_score", None),
+            getattr(transcriber, "precision_trigger_threshold", None),
+            getattr(transcriber, "precision_fallback_eligible", None),
+            getattr(transcriber, "precision_fallback_skip_reason", None),
+        )
+    return _TranscriberProvenance(
         transcription.language,
         transcription.alignment_source,
-        transcription.precision_fallback_reason,
+        getattr(transcriber, "precision_fallback_reason", None)
+        or transcription.precision_fallback_reason,
         bool(getattr(transcriber, "last_cache_hit", False)),
+        str(getattr(transcriber, "asr_model_used", default_model)),
+        bool(getattr(transcriber, "precision_fallback_used", False)),
+        getattr(transcriber, "precision_scope", None),
+        getattr(transcriber, "base_match_score", accepted_match_score),
+        getattr(transcriber, "precision_match_score", None),
+        getattr(transcriber, "precision_trigger_threshold", None),
+        getattr(transcriber, "precision_fallback_eligible", None),
+        getattr(transcriber, "precision_fallback_skip_reason", None),
     )
+
+
+def _supports_precision_fallback(model_name: str, language: str | None) -> bool:
+    """The default distil checkpoint is an English precision path."""
+    return model_name.endswith(".en") or language_base(language) == "en"
 
 
 def _evidence_conflicts(first: str, second: str, threshold: float) -> bool:

@@ -9,6 +9,7 @@ from .config import V2Config, V3Config
 from .errors import V0Error
 from .matching import DEFAULT_FUZZY_THRESHOLD
 from .pipeline import run_v0, run_v1, run_v2, run_v3, run_v4
+from .precision import DEFAULT_PRECISION_MODEL, DEFAULT_PRECISION_TRIGGER_THRESHOLD
 from .transcription import DEFAULT_MODEL
 
 
@@ -56,6 +57,34 @@ def _add_v1_arguments(parser: argparse.ArgumentParser) -> None:
         default="default",
         help="Keep faster-whisper timestamps or optionally refine them with WhisperX",
     )
+    parser.add_argument(
+        "--asr-precision-fallback",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Lazily retry rejected English candidate windows with the precision ASR model"
+        ),
+    )
+    parser.add_argument(
+        "--precision-asr-model",
+        default=DEFAULT_PRECISION_MODEL,
+        help="faster-whisper checkpoint used only after the default ASR rejects a match",
+    )
+    parser.add_argument(
+        "--precision-trigger-threshold",
+        type=float,
+        default=DEFAULT_PRECISION_TRIGGER_THRESHOLD,
+        help=(
+            "Minimum rejected base-ASR match score that is eligible for precision fallback"
+        ),
+    )
+    parser.add_argument(
+        "--full-audio-precision-fallback",
+        action="store_true",
+        help=(
+            "Explicitly allow the precision ASR model to retry full audio after base ASR fails"
+        ),
+    )
     parser.add_argument("--fuzzy-threshold", type=float, default=DEFAULT_FUZZY_THRESHOLD)
     parser.add_argument(
         "--cookies-from-browser",
@@ -91,6 +120,10 @@ def _visual_main(runner, argv: list[str] | None = None, *, milestone: str = "V4"
             verification_fuzzy_threshold=args.fuzzy_threshold,
             subtitle_window_size=args.subtitle_window_size,
             verification_margins=args.verification_margins,
+            asr_precision_fallback=args.asr_precision_fallback,
+            precision_asr_model=args.precision_asr_model,
+            precision_trigger_threshold=args.precision_trigger_threshold,
+            full_audio_precision_fallback=args.full_audio_precision_fallback,
         )
         result = runner(
             args.url,
@@ -126,6 +159,10 @@ def v2_main(argv: list[str] | None = None) -> int:
             verification_fuzzy_threshold=args.fuzzy_threshold,
             subtitle_window_size=args.subtitle_window_size,
             verification_margins=args.verification_margins,
+            asr_precision_fallback=args.asr_precision_fallback,
+            precision_asr_model=args.precision_asr_model,
+            precision_trigger_threshold=args.precision_trigger_threshold,
+            full_audio_precision_fallback=args.full_audio_precision_fallback,
         )
         result = run_v2(
             args.url,
@@ -175,8 +212,12 @@ def v1_main(argv: list[str] | None = None) -> int:
             cookies_from_browser=args.cookies_from_browser,
             cookie_file=args.cookies_file,
             precision_mode=args.precision_mode,
+            asr_precision_fallback=args.asr_precision_fallback,
+            precision_asr_model=args.precision_asr_model,
+            precision_trigger_threshold=args.precision_trigger_threshold,
+            full_audio_precision_fallback=args.full_audio_precision_fallback,
         )
-    except V0Error as exc:
+    except (V0Error, ValueError) as exc:
         print(json.dumps({"error": str(exc)}, indent=2), file=sys.stderr)
         return 1
     print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))

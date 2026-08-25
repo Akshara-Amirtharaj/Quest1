@@ -163,6 +163,14 @@ class V1Result:
     precision_fallback_reason: str | None = None
     transcript_cache_hit: bool = False
     media_metadata_cache_hit: bool = False
+    asr_model_used: str | None = None
+    precision_fallback_used: bool = False
+    precision_scope: str | None = None
+    base_match_score: float | None = None
+    precision_match_score: float | None = None
+    precision_trigger_threshold: float | None = None
+    precision_fallback_eligible: bool | None = None
+    precision_fallback_skip_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         from .confidence import assess_confidence
@@ -196,6 +204,7 @@ class V1Result:
             "match_type": self.match.match_type,
             "match_score": self.match.score,
             "asr_model": self.model,
+            "asr_model_used": self.asr_model_used or self.model,
             "localization_source": self.localization_source,
             "verification_source": self.verification_source,
             "caption_matched_text": self.caption_matched_text,
@@ -211,6 +220,13 @@ class V1Result:
             "precision_fallback_reason": self.precision_fallback_reason,
             "transcript_cache_hit": self.transcript_cache_hit,
             "media_metadata_cache_hit": self.media_metadata_cache_hit,
+            "precision_fallback_used": self.precision_fallback_used,
+            "precision_scope": self.precision_scope,
+            "base_match_score": self.base_match_score,
+            "precision_match_score": self.precision_match_score,
+            "precision_trigger_threshold": self.precision_trigger_threshold,
+            "precision_fallback_eligible": self.precision_fallback_eligible,
+            "precision_fallback_skip_reason": self.precision_fallback_skip_reason,
             "audio_processed_seconds": self.audio_processed_seconds,
             "audio_processed_hms": format_timestamp(self.audio_processed_seconds),
         }

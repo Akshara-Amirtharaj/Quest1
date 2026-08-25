@@ -1,13 +1,20 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from dialogue_locator.dependencies import ExternalTools
+from dialogue_locator.config import V2Config
+from dialogue_locator.errors import V0Error
+from dialogue_locator.matching import find_dialogue
 from dialogue_locator.models import (
     CaptionCandidate,
     CaptionTrack,
     DialogueMatch,
     MediaInfo,
     ResolvedFrame,
+    TranscriptWord,
+    Transcription,
     V1Result,
 )
 from dialogue_locator.caption_verification import CaptionVerification
@@ -151,3 +158,237 @@ def test_failed_manual_vtt_retries_manual_srt_before_automatic(tmp_path: Path) -
     assert result.localization_source == "caption"
     assert result.verification_source == "asr"
     full_audio.assert_not_called()
+
+
+def test_caption_path_returns_precision_fallback_provenance(tmp_path: Path) -> None:
+    media_path = tmp_path / "media.mp4"
+    media_path.write_bytes(b"media")
+    media = MediaInfo(
+        duration=30.0,
+        has_video=True,
+        has_audio=True,
+        embedded_subtitles=[],
+        width=320,
+        height=240,
+        video_codec="h264",
+        audio_codec="aac",
+        avg_frame_rate="15/1",
+        real_frame_rate="15/1",
+        video_time_base="1/1000",
+        video_start_time=0.0,
+        audio_start_time=0.0,
+    )
+    metadata = {
+        "subtitles": {
+            "en": [{"ext": "vtt", "url": "https://example.test/manual.vtt"}]
+        }
+    }
+    candidate = CaptionCandidate(
+        "How's it looking, Barley?",
+        10.0,
+        12.0,
+        "exact",
+        100.0,
+        "en",
+        "manual",
+    )
+
+    class Transcriber:
+        def __init__(self, transcription: Transcription) -> None:
+            self.transcription = transcription
+            self.calls = 0
+            self.last_cache_hit = False
+            self.last_transcription: Transcription | None = None
+
+        def __call__(self, _: Path) -> Transcription:
+            self.calls += 1
+            self.last_transcription = self.transcription
+            return self.transcription
+
+    base = Transcriber(
+        Transcription(
+            "As it looking, Bali?",
+            [
+                TranscriptWord("As", 0.0, 0.5),
+                TranscriptWord("it", 0.5, 0.7),
+                TranscriptWord("looking,", 0.7, 1.0),
+                TranscriptWord("Bali?", 1.0, 1.3),
+            ],
+            "en",
+            0.9,
+        )
+    )
+    precision = Transcriber(
+        Transcription(
+            "How's it looking, Barley?",
+            [
+                TranscriptWord("How's", 0.0, 0.4),
+                TranscriptWord("it", 0.4, 0.6),
+                TranscriptWord("looking,", 0.6, 0.9),
+                TranscriptWord("Barley?", 0.9, 1.2),
+            ],
+            "en",
+            0.99,
+        )
+    )
+
+    def verify(*args, **_kwargs):
+        transcriber = args[7]
+        transcription = transcriber(tmp_path / "same-window.wav")
+        relative = find_dialogue("How's it looking, Barley?", transcription.words, 85.0)
+        return CaptionVerification(relative, 12.0, candidate), 12.0
+
+    frame = ResolvedFrame(2, 10000, "1/1000", 10.0, tmp_path / "frame.png")
+    with (
+        patch(
+            "dialogue_locator.pipeline.require_external_tools",
+            return_value=ExternalTools("ffmpeg", "ffprobe"),
+        ),
+        patch("dialogue_locator.pipeline.acquire_media", return_value=(media_path, metadata)),
+        patch("dialogue_locator.pipeline.inspect_media", return_value=media),
+        patch(
+            "dialogue_locator.pipeline._caption_candidates_for_source",
+            side_effect=lambda source, *_args: [candidate] if source == "manual" else [],
+        ),
+        patch("dialogue_locator.pipeline._create_transcriber", side_effect=[base, precision]),
+        patch("dialogue_locator.pipeline.verify_caption_candidates", side_effect=verify),
+        patch("dialogue_locator.pipeline.resolve_frame_at_timestamp", return_value=frame),
+    ):
+        result = run_v2(
+            "https://example.test/watch",
+            "How's it looking, Barley?",
+            tmp_path / "work",
+            tmp_path / "output",
+            tmp_path / "models",
+            language="en",
+            config=V2Config(),
+        )
+
+    assert base.calls == 1
+    assert precision.calls == 1
+    assert result.match.matched_text == "How's it looking, Barley?"
+    assert result.asr_model_used == "distil-large-v3"
+    assert result.precision_fallback_used is True
+    assert result.precision_scope == "candidate_window"
+    assert result.base_match_score is not None and result.base_match_score < 85.0
+    assert result.precision_match_score == 100.0
+    assert result.precision_trigger_threshold == 45.0
+    assert result.precision_fallback_eligible is True
+    assert result.precision_fallback_skip_reason is None
+
+
+def test_all_low_score_caption_candidates_continue_to_full_asr_fallback(
+    tmp_path: Path,
+) -> None:
+    media_path = tmp_path / "media.mp4"
+    media_path.write_bytes(b"media")
+    media = MediaInfo(
+        duration=30.0,
+        has_video=True,
+        has_audio=True,
+        embedded_subtitles=[],
+        width=320,
+        height=240,
+        video_codec="h264",
+        audio_codec="aac",
+        avg_frame_rate="15/1",
+        real_frame_rate="15/1",
+        video_time_base="1/1000",
+        video_start_time=0.0,
+        audio_start_time=0.0,
+    )
+    metadata = {
+        "subtitles": {
+            "en": [{"ext": "vtt", "url": "https://example.test/manual.vtt"}]
+        }
+    }
+    candidate = CaptionCandidate(
+        "wrong caption",
+        10.0,
+        12.0,
+        "fuzzy",
+        90.0,
+        "en",
+        "manual",
+    )
+
+    class BaseTranscriber:
+        last_cache_hit = False
+
+        def __init__(self) -> None:
+            self.calls = 0
+            self.last_transcription: Transcription | None = None
+
+        def __call__(self, _: Path) -> Transcription:
+            self.calls += 1
+            self.last_transcription = Transcription(
+                "Completely unrelated window content.",
+                [
+                    TranscriptWord("Completely", 0.0, 0.2),
+                    TranscriptWord("unrelated", 0.2, 0.4),
+                    TranscriptWord("window", 0.4, 0.6),
+                    TranscriptWord("content.", 0.6, 0.8),
+                ],
+                "en",
+                0.99,
+            )
+            return self.last_transcription
+
+    base = BaseTranscriber()
+
+    def verify(*args, **_kwargs):
+        transcriber = args[7]
+        transcription = transcriber(tmp_path / "same-window.wav")
+        assert transcriber.precision_fallback_used is False
+        assert transcriber.precision_fallback_skip_reason == (
+            "base_match_score_below_precision_trigger"
+        )
+        with pytest.raises(V0Error, match="Dialogue not found"):
+            find_dialogue(
+                "How's it looking, Barley?",
+                transcription.words,
+                85.0,
+            )
+        return None, 6.0
+
+    fallback = V1Result(
+        "https://example.test/watch",
+        media_path,
+        "How's it looking, Barley?",
+        DialogueMatch("How's it looking, Barley?", 20.0, 21.0, "exact", 100.0),
+        ResolvedFrame(1, 20000, "1/1000", 20.0, tmp_path / "frame.png"),
+        "base.en",
+        audio_processed_seconds=30.0,
+    )
+    with (
+        patch(
+            "dialogue_locator.pipeline.require_external_tools",
+            return_value=ExternalTools("ffmpeg", "ffprobe"),
+        ),
+        patch("dialogue_locator.pipeline.acquire_media", return_value=(media_path, metadata)),
+        patch("dialogue_locator.pipeline.inspect_media", return_value=media),
+        patch(
+            "dialogue_locator.pipeline._caption_candidates_for_source",
+            side_effect=lambda source, *_args: [candidate] if source == "manual" else [],
+        ),
+        patch("dialogue_locator.pipeline._create_transcriber", side_effect=[base]),
+        patch("dialogue_locator.pipeline.verify_caption_candidates", side_effect=verify),
+        patch(
+            "dialogue_locator.pipeline._localize_full_audio",
+            return_value=fallback,
+        ) as full_audio,
+    ):
+        result = run_v2(
+            "https://example.test/watch",
+            "How's it looking, Barley?",
+            tmp_path / "work",
+            tmp_path / "output",
+            tmp_path / "models",
+            language="en",
+            config=V2Config(),
+        )
+
+    assert base.calls == 1
+    full_audio.assert_called_once()
+    assert result.localization_source == "asr"
+    assert result.audio_processed_seconds == 36.0

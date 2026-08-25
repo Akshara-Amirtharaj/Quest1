@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quest1-dialogue-locator"
+version = "0.5.0"
+description = "Hardened audio and visible-text dialogue localization in public video media"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "av>=12,<16",
+    "faster-whisper>=1.2,<2",
+    "Pillow>=10,<12",
+    "paddleocr>=3.2,<4",
+    "paddlepaddle>=3.2,<4",
+    "pysubs2>=1.8,<2",
+    "rapidfuzz>=3.9,<4",
+    "requests>=2.32,<3",
+    "yt-dlp[curl-cffi]>=2025.1.15",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9"]
+precision = ["whisperx>=3.3,<4"]
+
+[project.scripts]
+quest1 = "dialogue_locator.cli:main"
+quest1-v0 = "dialogue_locator.cli:v0_main"
+quest1-v1 = "dialogue_locator.cli:v1_main"
+quest1-v2 = "dialogue_locator.cli:v2_main"
+quest1-v3 = "dialogue_locator.cli:v3_main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]

@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.pytest_tmp/
+.test-tmp/
+.dist/
+.cache/
+*.part
+*.ytdl
+output/*
+!output/.gitkeep
+tmp/

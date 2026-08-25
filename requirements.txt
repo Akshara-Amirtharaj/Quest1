@@ -1,0 +1,10 @@
+av>=12,<16
+faster-whisper>=1.2,<2
+Pillow>=10,<12
+paddleocr>=3.2,<4
+paddlepaddle>=3.2,<4
+pysubs2>=1.8,<2
+rapidfuzz>=3.9,<4
+requests>=2.32,<3
+yt-dlp[curl-cffi]>=2025.1.15
+pytest>=8,<9

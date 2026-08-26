@@ -13,6 +13,26 @@ const resultBox = document.querySelector('#result')
 let elapsedTimer
 let requestInFlight = false
 
+const errorStates = {
+  VIDEO_URL_REQUIRED: ['Video URL required', 'Enter a video URL to continue.'],
+  INVALID_VIDEO_URL: ['Invalid video URL', 'Enter a valid public video URL.'],
+  DIALOGUE_REQUIRED: ['Dialogue required', 'Enter the dialogue you want to find.'],
+  VIDEO_UNAVAILABLE: ['Video unavailable', "We couldn't access this video. Check the URL and make sure the video is publicly available."],
+  DIALOGUE_NOT_FOUND: ['Dialogue not found', "We couldn't find this dialogue in the video. Try a slightly different phrase."],
+  PROCESSING_FAILED: ['Processing failed', 'Something went wrong while processing the video. Please try again.'],
+}
+
+const errorAliases = {
+  NO_MATCH: 'DIALOGUE_NOT_FOUND',
+  MEDIA_UNAVAILABLE: 'VIDEO_UNAVAILABLE',
+  NO_AUDIO: 'VIDEO_UNAVAILABLE',
+  NO_VIDEO: 'VIDEO_UNAVAILABLE',
+  INVALID_INPUT: 'INVALID_VIDEO_URL',
+  PIPELINE_ERROR: 'PROCESSING_FAILED',
+  STORAGE_ERROR: 'PROCESSING_FAILED',
+  INTERNAL_ERROR: 'PROCESSING_FAILED',
+}
+
 function titleCase(value) {
   return String(value).replaceAll('_', ' ').replace(/\b\w/g, letter => letter.toUpperCase())
 }
@@ -28,15 +48,48 @@ function setText(selector, value) {
 }
 
 function validate() {
-  if (!videoUrl.value.trim()) return 'Enter a video URL.'
+  if (!videoUrl.value.trim()) return 'VIDEO_URL_REQUIRED'
   try {
     const parsed = new URL(videoUrl.value.trim())
     if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('invalid protocol')
   } catch {
-    return 'Enter a valid public HTTP or HTTPS video URL.'
+    return 'INVALID_VIDEO_URL'
   }
-  if (!dialogue.value.trim()) return 'Enter the dialogue you want to find.'
+  if (!dialogue.value.trim()) return 'DIALOGUE_REQUIRED'
   return null
+}
+
+function clearFieldError(input, feedback) {
+  input.removeAttribute('aria-invalid')
+  feedback.hidden = true
+  feedback.textContent = ''
+}
+
+function clearError() {
+  errorBox.hidden = true
+  errorTitle.textContent = ''
+  errorMessage.textContent = ''
+}
+
+function showError(code, { inline = false } = {}) {
+  const publicCode = errorAliases[code] || code
+  const [title, message] = errorStates[publicCode] || errorStates.PROCESSING_FAILED
+  errorTitle.textContent = title
+  errorMessage.textContent = message
+  errorBox.hidden = false
+
+  if (!inline) return
+  if (publicCode === 'VIDEO_URL_REQUIRED' || publicCode === 'INVALID_VIDEO_URL') {
+    const feedback = document.querySelector('#video-url-error')
+    videoUrl.setAttribute('aria-invalid', 'true')
+    feedback.textContent = message
+    feedback.hidden = false
+  } else if (publicCode === 'DIALOGUE_REQUIRED') {
+    const feedback = document.querySelector('#dialogue-error')
+    dialogue.setAttribute('aria-invalid', 'true')
+    feedback.textContent = message
+    feedback.hidden = false
+  }
 }
 
 function startProgress() {
@@ -79,6 +132,13 @@ function showResult(result) {
 
 dialogue.addEventListener('input', () => {
   dialogueCount.textContent = `${dialogue.value.length} / 2000`
+  clearFieldError(dialogue, document.querySelector('#dialogue-error'))
+  clearError()
+})
+
+videoUrl.addEventListener('input', () => {
+  clearFieldError(videoUrl, document.querySelector('#video-url-error'))
+  clearError()
 })
 
 form.addEventListener('submit', async event => {
@@ -86,12 +146,13 @@ form.addEventListener('submit', async event => {
   if (requestInFlight) return
   const validationError = validate()
   if (validationError) {
-    errorMessage.textContent = validationError
-    errorBox.hidden = false
+    showError(validationError, { inline: true })
     return
   }
 
-  errorBox.hidden = true
+  clearError()
+  clearFieldError(videoUrl, document.querySelector('#video-url-error'))
+  clearFieldError(dialogue, document.querySelector('#dialogue-error'))
   resultBox.hidden = true
   submitButton.disabled = true
   requestInFlight = true
@@ -105,20 +166,13 @@ form.addEventListener('submit', async event => {
     })
     const payload = await response.json().catch(() => ({}))
     if (!response.ok) {
-      const error = new Error(payload.detail?.message || 'The request could not be completed.')
+      const error = new Error('Request failed')
       error.code = payload.detail?.code
       throw error
     }
     showResult(payload)
   } catch (requestError) {
-    if (requestError instanceof TypeError) {
-      errorTitle.textContent = 'Backend connection interrupted'
-      errorMessage.textContent = 'The backend connection was interrupted. Please retry.'
-    } else {
-      errorTitle.textContent = requestError?.code === 'NO_MATCH' ? 'Couldn’t find that frame' : 'Couldn’t complete the request'
-      errorMessage.textContent = requestError instanceof Error ? requestError.message : 'The request could not be completed.'
-    }
-    errorBox.hidden = false
+    showError(requestError instanceof TypeError ? 'PROCESSING_FAILED' : requestError?.code)
   } finally {
     stopProgress()
     submitButton.disabled = false

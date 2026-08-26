@@ -7,12 +7,13 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from dialogue_locator.errors import V0Error
 from dialogue_locator.pipeline import run_v2
@@ -27,6 +28,14 @@ class FindRequest(BaseModel):
 
     video_url: str = Field(min_length=1, max_length=4096)
     dialogue: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("video_url")
+    @classmethod
+    def validate_video_url(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("invalid public video URL")
+        return value
 
 
 class ApiError(BaseModel):
@@ -108,19 +117,69 @@ class FrameRegistry:
             return self._paths.get(safe_id)
 
 
-def _error_code(message: str) -> tuple[str, int]:
+PUBLIC_ERRORS: dict[str, tuple[int, str]] = {
+    "VIDEO_URL_REQUIRED": (422, "Enter a video URL to continue."),
+    "INVALID_VIDEO_URL": (422, "Enter a valid public video URL."),
+    "DIALOGUE_REQUIRED": (422, "Enter the dialogue you want to find."),
+    "VIDEO_UNAVAILABLE": (
+        422,
+        "We couldn't access this video. Check the URL and make sure the video is publicly available.",
+    ),
+    "DIALOGUE_NOT_FOUND": (
+        404,
+        "We couldn't find this dialogue in the video. Try a slightly different phrase.",
+    ),
+    "PROCESSING_FAILED": (
+        500,
+        "Something went wrong while processing the video. Please try again.",
+    ),
+}
+
+
+def _public_error(code: str) -> tuple[int, dict[str, str]]:
+    status, message = PUBLIC_ERRORS[code]
+    return status, {"code": code, "message": message}
+
+
+def _pipeline_error_code(message: str) -> str:
     normalized = message.casefold()
-    if "does not contain an audio stream" in normalized:
-        return "NO_AUDIO", 422
-    if "does not contain a video stream" in normalized or "no decodable video stream" in normalized:
-        return "NO_VIDEO", 422
     if "dialogue not found" in normalized or "transcription contains no matchable words" in normalized:
-        return "NO_MATCH", 404
-    if "url" in normalized and any(term in normalized for term in ("invalid", "http", "hostname", "empty")):
-        return "INVALID_INPUT", 422
-    if any(term in normalized for term in ("acquir", "download", "yt-dlp", "media")):
-        return "MEDIA_UNAVAILABLE", 422
-    return "PIPELINE_ERROR", 422
+        return "DIALOGUE_NOT_FOUND"
+    if (
+        "target dialogue cannot be empty" in normalized
+        or "target dialogue must contain at least one letter or number" in normalized
+    ):
+        return "DIALOGUE_REQUIRED"
+    if any(
+        phrase in normalized
+        for phrase in (
+            "video url must be",
+            "invalid video url",
+            "video url cannot be empty",
+            "video url is empty",
+        )
+    ):
+        return "INVALID_VIDEO_URL"
+    if any(
+        term in normalized
+        for term in (
+            "acquir",
+            "download",
+            "yt-dlp",
+            "direct http",
+            "http error",
+            "httperror",
+            "extractor",
+            "cookie",
+            "ffmpeg",
+            "ffprobe",
+            "does not contain an audio stream",
+            "does not contain a video stream",
+            "no decodable video stream",
+        )
+    ):
+        return "VIDEO_UNAVAILABLE"
+    return "PROCESSING_FAILED"
 
 
 def _adapt_result(result: Any, frame_id: str, elapsed_seconds: float) -> FindResponse:
@@ -168,13 +227,13 @@ def _adapt_result(result: Any, frame_id: str, elapsed_seconds: float) -> FindRes
             "transcription_language": payload["transcription_language"],
             "alignment_source": payload["alignment_source"],
             "asr_model": payload["asr_model"],
-            "asr_model_used": payload["asr_model_used"],
+            "asr_model_used": payload.get("asr_model_used", payload["asr_model"]),
             "precision_mode": payload["precision_mode"],
             "precision_fallback_reason": payload["precision_fallback_reason"],
-            "precision_fallback_used": payload["precision_fallback_used"],
-            "precision_scope": payload["precision_scope"],
-            "base_match_score": payload["base_match_score"],
-            "precision_match_score": payload["precision_match_score"],
+            "precision_fallback_used": payload.get("precision_fallback_used", False),
+            "precision_scope": payload.get("precision_scope"),
+            "base_match_score": payload.get("base_match_score", payload["match_score"]),
+            "precision_match_score": payload.get("precision_match_score"),
             "ocr_model": payload.get("ocr_model"),
             "ocr_processed_frames": payload.get("ocr_processed_frames", 0),
             "transcript_cache_hit": payload["transcript_cache_hit"],
@@ -193,10 +252,22 @@ def create_app(data_root: Path | None = None) -> FastAPI:
     @app.exception_handler(RequestValidationError)
     async def invalid_request(_: Request, exc: RequestValidationError) -> JSONResponse:
         first = exc.errors()[0] if exc.errors() else {}
-        message = str(first.get("msg", "The request is invalid."))
+        field = first.get("loc", (None,))[-1]
+        value = first.get("input")
+        if field == "video_url":
+            code = (
+                "VIDEO_URL_REQUIRED"
+                if first.get("type") == "missing" or value is None or not str(value).strip()
+                else "INVALID_VIDEO_URL"
+            )
+        elif field == "dialogue":
+            code = "DIALOGUE_REQUIRED"
+        else:
+            code = "PROCESSING_FAILED"
+        status, detail = _public_error(code)
         return JSONResponse(
-            status_code=422,
-            content={"detail": {"code": "INVALID_INPUT", "message": message}},
+            status_code=status,
+            content={"detail": detail},
         )
 
     @app.get("/api/health")
@@ -206,7 +277,7 @@ def create_app(data_root: Path | None = None) -> FastAPI:
     @app.post(
         "/api/find",
         response_model=FindResponse,
-        responses={404: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+        responses={404: {"model": ErrorResponse}, 422: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     )
     def find_frame(request: FindRequest) -> FindResponse:
         request_id = uuid.uuid4().hex
@@ -246,40 +317,31 @@ def create_app(data_root: Path | None = None) -> FastAPI:
             )
             frame_id = registry.add(result.frame.path)
         except V0Error as exc:
-            code, status = _error_code(str(exc))
+            code = _pipeline_error_code(str(exc))
+            status, detail = _public_error(code)
             LOGGER.warning(
                 "Quest1 request %s failed after %.1f seconds: %s",
                 request_id[:8],
                 time.perf_counter() - started,
                 exc,
             )
-            raise HTTPException(status_code=status, detail={"code": code, "message": str(exc)}) from exc
+            raise HTTPException(status_code=status, detail=detail) from exc
         except OSError as exc:
             LOGGER.exception(
                 "Quest1 request %s could not store its result after %.1f seconds.",
                 request_id[:8],
                 time.perf_counter() - started,
             )
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "code": "STORAGE_ERROR",
-                    "message": "The backend could not store the result. Please retry.",
-                },
-            ) from exc
+            status, detail = _public_error("PROCESSING_FAILED")
+            raise HTTPException(status_code=status, detail=detail) from exc
         except Exception as exc:
             LOGGER.exception(
                 "Quest1 request %s failed internally after %.1f seconds.",
                 request_id[:8],
                 time.perf_counter() - started,
             )
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "code": "INTERNAL_ERROR",
-                    "message": "The backend encountered an internal error. Please retry.",
-                },
-            ) from exc
+            status, detail = _public_error("PROCESSING_FAILED")
+            raise HTTPException(status_code=status, detail=detail) from exc
         finally:
             stop_heartbeat.set()
             heartbeat.join(timeout=0.1)

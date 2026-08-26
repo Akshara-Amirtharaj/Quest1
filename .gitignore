@@ -7,6 +7,8 @@ __pycache__/
 .pytest_tmp*/
 .test-tmp/
 .dist/
+build/
+dist/
 .cache/
 .validation/
 .worktrees/

@@ -1,6 +1,6 @@
 # Quest1 demo
 
-The demo is a thin local UI and HTTP adapter around `dialogue_locator.pipeline.run_v4`.
+The demo is a thin local UI and HTTP adapter around `dialogue_locator.pipeline.run_v2`.
 It does not implement or alter localization logic.
 
 ## API

@@ -20,7 +20,7 @@ PyAV seek/decode using PTS × time_base
 Timestamp + frame + match score + confidence/provenance
 ```
 
-If bounded remote frame access fails after audio-only localization, Quest1 downloads the full media and resolves the frame locally. The `quest1`/V3 path can additionally look for visible burned-in text with OCR; the bundled spoken-dialogue web UI uses V2 and does not load OCR unnecessarily.
+If bounded remote frame access fails after audio-only localization, Quest1 downloads the full media and resolves the frame locally. The `quest1`/V4 CLI path can additionally look for visible burned-in text with OCR; the bundled spoken-dialogue web UI uses V2 and does not load OCR unnecessarily.
 
 ## Setup
 

@@ -1,9 +1,10 @@
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
 from dialogue_locator.dependencies import ExternalTools
+from dialogue_locator.acquisition import SourceInspection
 from dialogue_locator.config import V2Config
 from dialogue_locator.errors import V0Error
 from dialogue_locator.matching import find_dialogue
@@ -84,6 +85,87 @@ def test_rate_limited_caption_stops_requests_and_falls_back_to_v1(tmp_path: Path
     inspect.assert_called_once()
     download.assert_called_once()
     full_audio.assert_called_once()
+
+
+def test_no_captions_selects_audio_only_path_before_full_media(tmp_path: Path) -> None:
+    marker = V1Result(
+        "https://example.test/watch",
+        tmp_path / "audio.m4a",
+        "target words",
+        DialogueMatch("target words", 3.0, 4.0, "exact", 100.0),
+        ResolvedFrame(1, 3000, "1/1000", 3.0, tmp_path / "frame.png"),
+        "base.en",
+    )
+    source = SourceInspection(
+        {"id": "example", "subtitles": {}, "automatic_captions": {}},
+        "https://cdn.example/video.mp4",
+        {},
+    )
+    with (
+        patch(
+            "dialogue_locator.pipeline.require_external_tools",
+            return_value=ExternalTools("ffmpeg", "ffprobe"),
+        ),
+        patch("dialogue_locator.pipeline.inspect_source", return_value=source),
+        patch(
+            "dialogue_locator.pipeline._run_audio_only_localization",
+            return_value=marker,
+        ) as audio_only,
+        patch("dialogue_locator.pipeline.acquire_media") as full_media,
+    ):
+        result = run_v2(
+            "https://example.test/watch",
+            "target words",
+            tmp_path / "work",
+            tmp_path / "output",
+            tmp_path / "models",
+            language="en",
+        )
+
+    assert result is marker
+    audio_only.assert_called_once()
+    assert audio_only.call_args.kwargs["source"].metadata is source.metadata
+    full_media.assert_not_called()
+
+
+def test_caption_inventory_keeps_existing_full_media_flow(tmp_path: Path) -> None:
+    source = SourceInspection(
+        {
+            "subtitles": {
+                "en": [{"ext": "vtt", "url": "https://example.test/captions.vtt"}]
+            }
+        },
+        "https://cdn.example/video.mp4",
+        {},
+    )
+    with (
+        patch(
+            "dialogue_locator.pipeline.require_external_tools",
+            return_value=ExternalTools("ffmpeg", "ffprobe"),
+        ),
+        patch("dialogue_locator.pipeline.inspect_source", return_value=source),
+        patch(
+            "dialogue_locator.pipeline._caption_candidates_for_source",
+            return_value=[Mock()],
+        ),
+        patch(
+            "dialogue_locator.pipeline.acquire_media",
+            side_effect=V0Error("expected full-media sentinel"),
+        ) as full_media,
+        patch("dialogue_locator.pipeline._run_audio_only_localization") as audio_only,
+    ):
+        with pytest.raises(V0Error, match="full-media sentinel"):
+            run_v2(
+                "https://example.test/watch",
+                "target words",
+                tmp_path / "work",
+                tmp_path / "output",
+                tmp_path / "models",
+                language="en",
+            )
+
+    full_media.assert_called_once()
+    audio_only.assert_not_called()
 
 
 def test_failed_manual_vtt_retries_manual_srt_before_automatic(tmp_path: Path) -> None:

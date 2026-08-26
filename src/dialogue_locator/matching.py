@@ -282,15 +282,7 @@ def find_dialogue_candidates(
     query_tokens = normalized_query.split()
     query_length = len(query_tokens)
     transcript_texts = [token.text for token in tokens]
-
-    exact_matches: list[DialogueMatch] = []
-    for start in range(0, len(tokens) - query_length + 1):
-        if transcript_texts[start : start + query_length] == query_tokens:
-            exact_matches.append(
-                _match_from_tokens(words, tokens, start, query_length, "exact", 100.0)
-            )
-    if exact_matches:
-        return exact_matches
+    exact_only_short_query = query_length == 1 and len(normalized_query) <= 4
 
     length_delta = max(1, min(3, math.ceil(query_length * 0.25)))
     minimum_length = max(1, query_length - length_delta)
@@ -310,7 +302,9 @@ def find_dialogue_candidates(
                 if score > best_score:
                     best_score = score
                     best_length = length
-            if best_score >= fuzzy_threshold:
+            if best_score >= fuzzy_threshold and (
+                not exact_only_short_query or best_score == 100.0
+            ):
                 first_candidate = (start, best_length, best_score)
                 break
         if first_candidate is None:
@@ -341,8 +335,13 @@ def find_dialogue_candidates(
                     best_length = length
                     best_score = score
 
+        match_type = (
+            "exact"
+            if transcript_texts[best_start : best_start + best_length] == query_tokens
+            else "fuzzy"
+        )
         fuzzy_matches.append(
-            _match_from_tokens(words, tokens, best_start, best_length, "fuzzy", best_score)
+            _match_from_tokens(words, tokens, best_start, best_length, match_type, best_score)
         )
 
         last_word_index = tokens[best_start + best_length - 1].word_index

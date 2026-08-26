@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -18,6 +20,10 @@ FORMAT_SELECTOR = (
     "bv*[height<=720]+ba/b[height<=720]/"
     "bv*+ba/b"
 )
+AUDIO_FORMAT_SELECTOR = "ba/bestaudio/b[acodec!=none]"
+DOWNLOAD_RETRIES = 10
+FRAGMENT_RETRIES = 10
+SOCKET_TIMEOUT_SECONDS = 30
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 DIRECT_DOWNLOAD_TIMEOUT = (15, 60)
 MEDIA_URL_CACHE_NAMESPACE = "media-urls"
@@ -32,6 +38,200 @@ MEDIA_METADATA_CACHE_KEYS = (
     "subtitles",
     "automatic_captions",
 )
+INCOMPLETE_MEDIA_SUFFIXES = (".part", ".ytdl", ".tmp", ".temp", ".aria2")
+LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SourceInspection:
+    metadata: dict[str, Any]
+    video_url: str | None
+    video_headers: dict[str, str]
+
+
+def _cookie_options(
+    cookies_from_browser: str | None,
+    cookie_file: Path | None,
+) -> dict[str, Any]:
+    options: dict[str, Any] = {}
+    if cookies_from_browser:
+        options["cookiesfrombrowser"] = (cookies_from_browser,)
+    if cookie_file:
+        options["cookiefile"] = str(cookie_file)
+    return options
+
+
+def _selected_video_source(metadata: dict[str, Any]) -> tuple[str | None, dict[str, str]]:
+    candidates: list[dict[str, Any]] = []
+    requested = metadata.get("requested_formats")
+    if isinstance(requested, list):
+        candidates.extend(item for item in requested if isinstance(item, dict))
+    candidates.append(metadata)
+    formats = metadata.get("formats")
+    if isinstance(formats, list):
+        video_formats = [
+            item for item in formats
+            if isinstance(item, dict)
+            and item.get("vcodec") not in {None, "none"}
+            and isinstance(item.get("url"), str)
+        ]
+        candidates.extend(
+            sorted(
+                video_formats,
+                key=lambda item: (
+                    (item.get("height") or 10_000) > 720,
+                    abs((item.get("height") or 720) - 720),
+                    -(item.get("tbr") or 0),
+                ),
+            )
+        )
+    for candidate in candidates:
+        selected_url = candidate.get("url")
+        if (
+            candidate.get("vcodec") == "none"
+            or not isinstance(selected_url, str)
+            or not selected_url
+        ):
+            continue
+        headers = candidate.get("http_headers") or metadata.get("http_headers") or {}
+        return selected_url, {
+            str(key): str(value) for key, value in headers.items()
+            if isinstance(key, str) and value is not None
+        }
+    return None, {}
+
+
+def _selected_audio_info(metadata: dict[str, Any]) -> dict[str, Any] | None:
+    """Build a downloadable audio info dict from an existing inspection result."""
+    candidates: list[dict[str, Any]] = []
+    requested = metadata.get("requested_formats")
+    if isinstance(requested, list):
+        candidates.extend(item for item in requested if isinstance(item, dict))
+    formats = metadata.get("formats")
+    if isinstance(formats, list):
+        candidates.extend(item for item in formats if isinstance(item, dict))
+    if metadata.get("acodec") not in {None, "none"}:
+        candidates.append(metadata)
+
+    audio_candidates = [
+        item
+        for item in candidates
+        if item.get("acodec") not in {None, "none"}
+        and isinstance(item.get("url"), str)
+        and item.get("url")
+    ]
+    if not audio_candidates:
+        return None
+    selected = max(
+        audio_candidates,
+        key=lambda item: (
+            item.get("vcodec") == "none",
+            item.get("abr") or item.get("tbr") or 0,
+        ),
+    )
+    prepared = dict(metadata)
+    prepared.update(selected)
+    # These describe the original multi-format selection. Keeping them would
+    # make yt-dlp download video again instead of the selected audio stream.
+    for key in ("formats", "requested_formats", "requested_downloads"):
+        prepared.pop(key, None)
+    prepared["vcodec"] = selected.get("vcodec", "none")
+    return prepared
+
+
+def inspect_source(
+    url: str,
+    *,
+    cookies_from_browser: str | None = None,
+    cookie_file: Path | None = None,
+) -> SourceInspection:
+    """Resolve captions and stream URLs without downloading media payloads."""
+    url = validate_public_url(url)
+    options: dict[str, Any] = {
+        "format": FORMAT_SELECTOR,
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        **_cookie_options(cookies_from_browser, cookie_file),
+    }
+    try:
+        with YoutubeDL(options) as downloader:
+            metadata = downloader.extract_info(url, download=False)
+    except (DownloadError, TypeError, ValueError, OSError) as exc:
+        raise V0Error(f"Could not inspect source metadata: {exc}") from exc
+    if not isinstance(metadata, dict):
+        raise V0Error("yt-dlp did not return source metadata.")
+    video_url, video_headers = _selected_video_source(metadata)
+    return SourceInspection(metadata, video_url, video_headers)
+
+
+def acquire_audio_only(
+    url: str,
+    cache_dir: Path,
+    *,
+    cookies_from_browser: str | None = None,
+    cookie_file: Path | None = None,
+    source_metadata: dict[str, Any] | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    """Download an audio-bearing format into a cache separate from full media."""
+    url = validate_public_url(url)
+    audio_dir = cache_dir / "audio-only"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    options: dict[str, Any] = {
+        "format": AUDIO_FORMAT_SELECTOR,
+        "outtmpl": str(audio_dir / "%(extractor)s-%(id)s.%(ext)s"),
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "continuedl": True,
+        "overwrites": False,
+        "retries": DOWNLOAD_RETRIES,
+        "fragment_retries": FRAGMENT_RETRIES,
+        "socket_timeout": SOCKET_TIMEOUT_SECONDS,
+        "concurrent_fragment_downloads": 1,
+        **_cookie_options(cookies_from_browser, cookie_file),
+    }
+    try:
+        with YoutubeDL(options) as downloader:
+            inspected_audio = (
+                _selected_audio_info(source_metadata)
+                if source_metadata is not None
+                else None
+            )
+            if inspected_audio is not None:
+                try:
+                    metadata = downloader.process_ie_result(inspected_audio, download=True)
+                except DownloadError as exc:
+                    LOGGER.warning(
+                        "Inspected audio stream failed; refreshing provider metadata once: %s",
+                        exc,
+                    )
+                    metadata = downloader.extract_info(url, download=True)
+            else:
+                metadata = downloader.extract_info(url, download=True)
+            if not isinstance(metadata, dict):
+                raise V0Error("yt-dlp did not return audio metadata.")
+            requested = metadata.get("requested_downloads")
+            candidates = (
+                [item.get("filepath") for item in requested if isinstance(item, dict)]
+                if isinstance(requested, list) else []
+            )
+            candidates.extend([metadata.get("filepath"), downloader.prepare_filename(metadata)])
+    except (DownloadError, TypeError, ValueError, OSError) as exc:
+        raise V0Error(f"Audio-only acquisition failed: {exc}") from exc
+    for candidate in candidates:
+        if candidate and _is_completed_media_file(Path(candidate)):
+            return Path(candidate).resolve(), metadata
+    identifier = str(metadata.get("id", ""))
+    matches = sorted(
+        (path for path in audio_dir.glob(f"*-{identifier}.*") if _is_completed_media_file(path)),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if matches:
+        return matches[0].resolve(), metadata
+    raise V0Error("yt-dlp completed but did not produce confirmed complete audio.")
 
 
 def normalize_public_url(url: str) -> str:
@@ -62,7 +262,12 @@ def _is_probably_media_response(response: requests.Response) -> bool:
 
 def _direct_download_path(url: str, cache_dir: Path) -> Path:
     suffix = Path(urlparse(url).path).suffix
-    if not suffix or len(suffix) > 10 or not suffix[1:].isalnum():
+    if (
+        not suffix
+        or len(suffix) > 10
+        or not suffix[1:].isalnum()
+        or suffix.casefold() in INCOMPLETE_MEDIA_SUFFIXES
+    ):
         suffix = ".media"
     digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
     return cache_dir / f"direct-{digest}{suffix.lower()}"
@@ -70,6 +275,25 @@ def _direct_download_path(url: str, cache_dir: Path) -> Path:
 
 def _media_url_cache_key(url: str) -> str:
     return hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+
+def _discard_partial(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        # A locked disposable partial must not mask the acquisition failure.
+        pass
+
+
+def _is_completed_media_file(path: Path) -> bool:
+    """Return whether a path is eligible to become authoritative media."""
+    name = path.name.casefold()
+    if name.endswith(INCOMPLETE_MEDIA_SUFFIXES) or ".part-frag" in name:
+        return False
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def _cached_media_for_url(url: str, cache_dir: Path) -> tuple[Path, dict[str, Any]] | None:
@@ -86,7 +310,7 @@ def _cached_media_for_url(url: str, cache_dir: Path) -> tuple[Path, dict[str, An
         media_path.relative_to(cache_dir.resolve())
     except ValueError:
         return None
-    if not media_path.is_file() or media_path.stat().st_size == 0:
+    if not _is_completed_media_file(media_path):
         return None
 
     metadata = cached.get("metadata")
@@ -101,6 +325,9 @@ def _store_media_for_url(
     media_path: Path,
     metadata: dict[str, Any],
 ) -> None:
+    if not _is_completed_media_file(media_path):
+        LOGGER.warning("Refusing to cache incomplete media artifact: %s", media_path)
+        return
     resolved_cache = cache_dir.resolve()
     resolved_media = media_path.resolve()
     try:
@@ -144,7 +371,7 @@ def _legacy_cached_media(url: str, cache_dir: Path) -> tuple[Path, dict[str, Any
             continue
         matches = [
             path for path in cache_dir.glob(f"*-{identifier}.*")
-            if path.is_file() and path.stat().st_size > 0 and path.suffix.lower() != ".part"
+            if _is_completed_media_file(path)
         ]
         provider_matches = [
             path for path in matches if path.name.lower().startswith(f"{provider}-")
@@ -170,7 +397,7 @@ def download_direct_media(url: str, cache_dir: Path) -> tuple[Path, dict[str, An
     except OSError as exc:
         raise V0Error(f"Could not create media cache directory {cache_dir}: {exc}") from exc
     destination = _direct_download_path(url, cache_dir)
-    if destination.is_file() and destination.stat().st_size > 0:
+    if _is_completed_media_file(destination):
         return destination.resolve(), {"extractor": "direct-http", "webpage_url": url}
 
     temporary = destination.with_suffix(destination.suffix + ".part")
@@ -197,10 +424,10 @@ def download_direct_media(url: str, cache_dir: Path) -> tuple[Path, dict[str, An
             raise V0Error("Direct HTTP fallback returned an empty media file.")
         temporary.replace(destination)
     except V0Error:
-        temporary.unlink(missing_ok=True)
+        _discard_partial(temporary)
         raise
     except (requests.RequestException, OSError) as exc:
-        temporary.unlink(missing_ok=True)
+        _discard_partial(temporary)
         raise V0Error(f"Direct HTTP media download failed: {exc}") from exc
 
     return destination.resolve(), {
@@ -227,7 +454,7 @@ def acquire_media(
     if cached is not None:
         return cached
     direct_path = _direct_download_path(url, cache_dir)
-    if direct_path.is_file() and direct_path.stat().st_size > 0:
+    if _is_completed_media_file(direct_path):
         metadata = {"extractor": "direct-http", "webpage_url": url, "media_cache_hit": True}
         _store_media_for_url(url, cache_dir, direct_path, metadata)
         return direct_path.resolve(), metadata
@@ -245,10 +472,7 @@ def acquire_media(
         "overwrites": False,
         "merge_output_format": "mkv",
     }
-    if cookies_from_browser:
-        options["cookiesfrombrowser"] = (cookies_from_browser,)
-    if cookie_file:
-        options["cookiefile"] = str(cookie_file)
+    options.update(_cookie_options(cookies_from_browser, cookie_file))
     try:
         with YoutubeDL(options) as downloader:
             metadata = downloader.extract_info(url, download=True)
@@ -275,16 +499,30 @@ def acquire_media(
         raise V0Error(f"Media acquisition failed: {exc}") from exc
 
     for candidate in candidates:
-        if candidate and Path(candidate).is_file():
+        if candidate and _is_completed_media_file(Path(candidate)):
             media_path = Path(candidate).resolve()
             _store_media_for_url(url, cache_dir, media_path, metadata)
             return media_path, metadata
+        if candidate and Path(candidate).exists():
+            LOGGER.warning("Ignoring incomplete media path reported by yt-dlp: %s", candidate)
 
     # A merge can change the extension from yt-dlp's prepared filename.
     identifier = str(metadata.get("id", ""))
-    matches = sorted(cache_dir.glob(f"*-{identifier}.*"), key=lambda path: path.stat().st_mtime, reverse=True)
+    matches = sorted(
+        (
+            path
+            for path in cache_dir.glob(f"*-{identifier}.*")
+            if _is_completed_media_file(path)
+        ),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
     if matches:
         media_path = matches[0].resolve()
         _store_media_for_url(url, cache_dir, media_path, metadata)
         return media_path, metadata
-    raise V0Error("yt-dlp completed but the downloaded media file could not be located.")
+    raise V0Error(
+        "yt-dlp completed but did not produce a confirmed complete media file.",
+        code="acquisition_failed",
+        stage="acquisition",
+    )

@@ -10,7 +10,13 @@ from pathlib import Path
 
 from rapidfuzz import fuzz
 
-from .acquisition import acquire_media, validate_public_url
+from .acquisition import (
+    SourceInspection,
+    acquire_audio_only,
+    acquire_media,
+    inspect_source,
+    validate_public_url,
+)
 from .audio import extract_speech_audio
 from .caption_matching import find_caption_candidates, merge_caption_candidates
 from .caption_verification import verify_caption_candidates
@@ -19,7 +25,15 @@ from .cache import CachedOCRReader, CachedTranscriber, JsonFileCache, load_media
 from .config import V2Config, V3Config
 from .dependencies import require_external_tools
 from .errors import V0Error
-from .frames import decode_sample_frame, iter_frames_in_interval, resolve_frame_at_timestamp
+from .frames import (
+    DIALOGUE_FRAME_FILENAME,
+    decode_sample_frame,
+    iter_frames_in_interval,
+    prepare_dialogue_frame_output,
+    prepare_sample_frame_output,
+    resolve_frame_at_timestamp,
+    save_frame_image,
+)
 from .inspection import inspect_media
 from .matching import DEFAULT_FUZZY_THRESHOLD, find_dialogue_candidates, normalize_text
 from .models import CaptionCandidate, CaptionTrack, DialogueMatch, MediaInfo, ResolvedFrame, Transcription, V0Result, V1Result, V3Result
@@ -58,6 +72,7 @@ def run_v0(
     cookies_from_browser: str | None = None,
     cookie_file: Path | None = None,
 ) -> V0Result:
+    prepare_sample_frame_output(output_dir)
     url = validate_public_url(url)
     tools = require_external_tools()
     media_path, metadata = acquire_media(
@@ -102,6 +117,7 @@ def run_v1(
     precision_trigger_threshold: float = DEFAULT_PRECISION_TRIGGER_THRESHOLD,
     full_audio_precision_fallback: bool = False,
 ) -> V1Result:
+    prepare_dialogue_frame_output(output_dir)
     url = validate_public_url(url)
     if not query.strip():
         raise V0Error("Target dialogue cannot be empty.")
@@ -186,12 +202,66 @@ def run_v2(
     cookies_from_browser: str | None = None,
     cookie_file: Path | None = None,
     precision_mode: str = "default",
+    _allow_audio_only: bool = True,
 ) -> V1Result:
+    prepare_dialogue_frame_output(output_dir)
     url = validate_public_url(url)
     if not query.strip():
         raise V0Error("Target dialogue cannot be empty.")
     config = config or V2Config()
     tools = require_external_tools()
+    source: SourceInspection | None = None
+    if _allow_audio_only:
+        try:
+            source = inspect_source(
+                url,
+                cookies_from_browser=cookies_from_browser,
+                cookie_file=cookie_file,
+            )
+        except V0Error as exc:
+            LOGGER.warning("Metadata-only inspection failed; using full acquisition: %s", exc)
+        if source is not None:
+            inventory = discover_captions(source.metadata)
+            selected = select_caption_tracks(inventory, language)
+            source_id = str(source.metadata.get("id") or "source")
+            subtitle_cache_dir = work_dir / "captions" / source_id
+            has_caption_candidates = False
+            for caption_source in ("manual", "automatic"):
+                tracks = [
+                    track for track_type, track in selected
+                    if track_type == caption_source
+                ]
+                try:
+                    if _caption_candidates_for_source(
+                        caption_source,
+                        tracks,
+                        query,
+                        subtitle_cache_dir,
+                        config,
+                    ):
+                        has_caption_candidates = True
+                        break
+                except SubtitleRateLimitError:
+                    break
+            if not has_caption_candidates:
+                return _run_audio_only_localization(
+                    url=url,
+                    query=query,
+                    source=source,
+                    work_dir=work_dir,
+                    output_dir=output_dir,
+                    model_cache=model_cache,
+                    model_name=model_name,
+                    device=device,
+                    compute_type=compute_type,
+                    language=language,
+                    config=config,
+                    cookies_from_browser=cookies_from_browser,
+                    cookie_file=cookie_file,
+                    precision_mode=precision_mode,
+                    ffmpeg=tools.ffmpeg,
+                    ffprobe=tools.ffprobe,
+                )
     media_path, metadata = acquire_media(
         url,
         work_dir,
@@ -202,7 +272,7 @@ def run_v2(
     media, metadata_cache_hit = _inspect_media_cached(media_path, tools.ffprobe, cache_root)
     _require_audio_video(media)
     work_dir.mkdir(parents=True, exist_ok=True)
-    subtitle_cache_dir = work_dir / "captions" / media_path.stem
+    subtitle_cache_dir = work_dir / "captions" / str(metadata.get("id") or media_path.stem)
     resolved_model = resolve_model_name(model_name, language)
 
     base_transcriber: CachedTranscriber | None = None
@@ -390,6 +460,7 @@ def run_v3(
     cookie_file: Path | None = None,
     precision_mode: str = "default",
 ) -> V3Result:
+    prepare_dialogue_frame_output(output_dir)
     config = v3_config or V3Config()
     localized = run_v2(
         url,
@@ -405,6 +476,7 @@ def run_v3(
         cookies_from_browser=cookies_from_browser,
         cookie_file=cookie_file,
         precision_mode=precision_mode,
+        _allow_audio_only=False,
     )
     interval_start = max(0.0, localized.match.start - config.search_margin)
     interval_end = localized.match.end + config.search_margin
@@ -437,9 +509,25 @@ def run_v3(
             ocr_cache_hits=ocr_cache_hits,
         )
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    frame_path = (output_dir / "visible_dialogue_frame.png").resolve()
-    frame.image.save(frame_path, format="PNG")
+    try:
+        frame_path = save_frame_image(
+            frame.image,
+            output_dir,
+            DIALOGUE_FRAME_FILENAME,
+        )
+    except V0Error as exc:
+        # OCR is optional and the spoken frame was already published atomically.
+        LOGGER.warning(
+            "Could not publish the OCR-selected frame; using spoken result: %s",
+            exc,
+        )
+        return V3Result(
+            **localized.__dict__,
+            frame_match_type="spoken_dialogue",
+            ocr_processed_frames=processed_frames,
+            ocr_model=getattr(reader, "model_description", PADDLE_MODEL_DESCRIPTION),
+            ocr_cache_hits=ocr_cache_hits,
+        )
     resolved = ResolvedFrame(
         index=frame.index,
         pts=frame.pts,
@@ -533,6 +621,106 @@ def _require_audio_video(media: MediaInfo) -> None:
         raise V0Error("The acquired media does not contain an audio stream.")
 
 
+def _run_audio_only_localization(
+    *,
+    url: str,
+    query: str,
+    source: SourceInspection,
+    work_dir: Path,
+    output_dir: Path,
+    model_cache: Path,
+    model_name: str,
+    device: str,
+    compute_type: str,
+    language: str | None,
+    config: V2Config,
+    cookies_from_browser: str | None,
+    cookie_file: Path | None,
+    precision_mode: str,
+    ffmpeg: str,
+    ffprobe: str,
+) -> V1Result:
+    audio_path, _ = acquire_audio_only(
+        url,
+        work_dir,
+        cookies_from_browser=cookies_from_browser,
+        cookie_file=cookie_file,
+        source_metadata=source.metadata,
+    )
+    cache_root = model_cache.parent / "pipeline-cache"
+    media, metadata_cache_hit = _inspect_media_cached(audio_path, ffprobe, cache_root)
+    if not media.has_audio:
+        raise V0Error("The audio-only acquisition has no decodable audio stream.")
+    resolved_model = resolve_model_name(model_name, language)
+    base = _create_transcriber(
+        resolved_model,
+        model_cache,
+        device,
+        compute_type,
+        language,
+        precision_mode,
+        cache_root,
+    )
+    transcriber: Transcriber = base
+    if (
+        config.asr_precision_fallback
+        and config.full_audio_precision_fallback
+        and _supports_precision_fallback(resolved_model, language)
+    ):
+        transcriber = _precision_fallback_transcriber(
+            query=query,
+            fuzzy_threshold=config.verification_fuzzy_threshold,
+            base_transcriber=base,
+            base_model_name=resolved_model,
+            precision_model_name=config.precision_asr_model,
+            precision_trigger_threshold=config.precision_trigger_threshold,
+            model_cache=model_cache,
+            device=device,
+            compute_type=compute_type,
+            language=language,
+            precision_mode=precision_mode,
+            cache_root=cache_root,
+            scope="full_audio",
+        )
+
+    def resolve_frame(timestamp: float) -> ResolvedFrame:
+        if source.video_url:
+            try:
+                return resolve_frame_at_timestamp(
+                    source.video_url,
+                    timestamp,
+                    output_dir,
+                    http_headers=source.video_headers,
+                )
+            except V0Error as exc:
+                LOGGER.warning(
+                    "Bounded remote video seek failed; acquiring full media: %s", exc
+                )
+        full_path, _ = acquire_media(
+            url,
+            work_dir,
+            cookies_from_browser=cookies_from_browser,
+            cookie_file=cookie_file,
+        )
+        return resolve_frame_at_timestamp(full_path, timestamp, output_dir)
+
+    return _localize_full_audio(
+        url,
+        query,
+        audio_path,
+        media,
+        work_dir,
+        output_dir,
+        ffmpeg,
+        resolved_model,
+        config.verification_fuzzy_threshold,
+        transcriber,
+        precision_mode=precision_mode,
+        metadata_cache_hit=metadata_cache_hit,
+        frame_resolver=resolve_frame,
+    )
+
+
 def _localize_full_audio(
     url: str,
     query: str,
@@ -546,6 +734,7 @@ def _localize_full_audio(
     transcriber: Transcriber,
     precision_mode: str = "default",
     metadata_cache_hit: bool = False,
+    frame_resolver: Callable[[float], ResolvedFrame] | None = None,
 ) -> V1Result:
     with tempfile.TemporaryDirectory(
         prefix="v1-audio-", dir=work_dir, ignore_cleanup_errors=True
@@ -565,7 +754,11 @@ def _localize_full_audio(
         for relative_match in relative_matches
     )
     match = occurrences[0]
-    frame = resolve_frame_at_timestamp(media_path, match.start, output_dir)
+    frame = (
+        frame_resolver(match.start)
+        if frame_resolver is not None
+        else resolve_frame_at_timestamp(media_path, match.start, output_dir)
+    )
     processed_seconds = media.duration
     if processed_seconds is None and transcription.words:
         processed_seconds = transcription.words[-1].end

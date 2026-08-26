@@ -86,6 +86,9 @@ def inspect_media(path: Path, ffprobe: str = "ffprobe") -> MediaInfo:
         detail = completed.stderr.strip() or "unknown ffprobe error"
         raise V0Error(f"ffprobe failed for {path}: {detail}")
     try:
-        return parse_ffprobe(json.loads(completed.stdout))
+        payload = json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise V0Error("ffprobe returned invalid JSON") from exc
+    if not isinstance(payload, Mapping):
+        raise V0Error("ffprobe returned invalid media metadata")
+    return parse_ffprobe(payload)

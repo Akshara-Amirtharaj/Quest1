@@ -7,10 +7,31 @@ from pathlib import Path
 
 from .config import V2Config, V3Config
 from .errors import V0Error
+from .frames import prepare_dialogue_frame_output, prepare_sample_frame_output
 from .matching import DEFAULT_FUZZY_THRESHOLD
 from .pipeline import run_v0, run_v1, run_v2, run_v3, run_v4
 from .precision import DEFAULT_PRECISION_MODEL, DEFAULT_PRECISION_TRIGGER_THRESHOLD
 from .transcription import DEFAULT_MODEL
+
+
+def _error_payload(exc: V0Error | ValueError | OSError) -> dict[str, str]:
+    if isinstance(exc, V0Error):
+        return exc.to_dict()
+    if isinstance(exc, OSError):
+        return {
+            "error": str(exc),
+            "error_code": "filesystem_error",
+            "error_stage": "filesystem",
+        }
+    return {
+        "error": str(exc),
+        "error_code": "invalid_configuration",
+        "error_stage": "configuration",
+    }
+
+
+def _print_error(exc: V0Error | ValueError | OSError) -> None:
+    print(json.dumps(_error_payload(exc), indent=2), file=sys.stderr)
 
 
 def build_parser(*, milestone: str = "V4") -> argparse.ArgumentParser:
@@ -115,6 +136,7 @@ def v3_main(argv: list[str] | None = None) -> int:
 def _visual_main(runner, argv: list[str] | None = None, *, milestone: str = "V4") -> int:
     args = build_parser(milestone=milestone).parse_args(argv)
     try:
+        prepare_dialogue_frame_output(args.output_dir)
         config = V2Config(
             caption_fuzzy_threshold=args.caption_fuzzy_threshold,
             verification_fuzzy_threshold=args.fuzzy_threshold,
@@ -144,8 +166,8 @@ def _visual_main(runner, argv: list[str] | None = None, *, milestone: str = "V4"
             cookie_file=args.cookies_file,
             precision_mode=args.precision_mode,
         )
-    except (V0Error, ValueError) as exc:
-        print(json.dumps({"error": str(exc)}, indent=2), file=sys.stderr)
+    except (V0Error, ValueError, OSError) as exc:
+        _print_error(exc)
         return 1
     print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
     return 0
@@ -154,6 +176,7 @@ def _visual_main(runner, argv: list[str] | None = None, *, milestone: str = "V4"
 def v2_main(argv: list[str] | None = None) -> int:
     args = build_v2_parser().parse_args(argv)
     try:
+        prepare_dialogue_frame_output(args.output_dir)
         config = V2Config(
             caption_fuzzy_threshold=args.caption_fuzzy_threshold,
             verification_fuzzy_threshold=args.fuzzy_threshold,
@@ -179,8 +202,8 @@ def v2_main(argv: list[str] | None = None) -> int:
             cookie_file=args.cookies_file,
             precision_mode=args.precision_mode,
         )
-    except (V0Error, ValueError) as exc:
-        print(json.dumps({"error": str(exc)}, indent=2), file=sys.stderr)
+    except (V0Error, ValueError, OSError) as exc:
+        _print_error(exc)
         return 1
     print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
     return 0
@@ -198,6 +221,7 @@ def build_v1_parser() -> argparse.ArgumentParser:
 def v1_main(argv: list[str] | None = None) -> int:
     args = build_v1_parser().parse_args(argv)
     try:
+        prepare_dialogue_frame_output(args.output_dir)
         result = run_v1(
             args.url,
             args.dialogue,
@@ -217,8 +241,8 @@ def v1_main(argv: list[str] | None = None) -> int:
             precision_trigger_threshold=args.precision_trigger_threshold,
             full_audio_precision_fallback=args.full_audio_precision_fallback,
         )
-    except (V0Error, ValueError) as exc:
-        print(json.dumps({"error": str(exc)}, indent=2), file=sys.stderr)
+    except (V0Error, ValueError, OSError) as exc:
+        _print_error(exc)
         return 1
     print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
     return 0
@@ -239,6 +263,7 @@ def build_v0_parser() -> argparse.ArgumentParser:
 def v0_main(argv: list[str] | None = None) -> int:
     args = build_v0_parser().parse_args(argv)
     try:
+        prepare_sample_frame_output(args.output_dir)
         result = run_v0(
             args.url,
             args.work_dir,
@@ -246,8 +271,8 @@ def v0_main(argv: list[str] | None = None) -> int:
             cookies_from_browser=args.cookies_from_browser,
             cookie_file=args.cookies_file,
         )
-    except V0Error as exc:
-        print(json.dumps({"error": str(exc)}, indent=2), file=sys.stderr)
+    except (V0Error, OSError) as exc:
+        _print_error(exc)
         return 1
     print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
     return 0

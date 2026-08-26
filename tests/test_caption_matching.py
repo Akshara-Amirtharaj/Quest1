@@ -48,3 +48,29 @@ def test_candidates_from_tracks_are_chronological() -> None:
     merged = merge_caption_candidates([late, early])
 
     assert [candidate.start for candidate in merged] == [5.0, 20.0]
+
+
+def test_caption_target_spans_three_entries_with_boundary_timestamps() -> None:
+    entries = [
+        SubtitleEntry("My mind", 1.0, 1.6),
+        SubtitleEntry("rebels at", 1.6, 2.2),
+        SubtitleEntry("stagnation.", 2.2, 2.9),
+    ]
+
+    candidates = find_caption_candidates(
+        "MY mind—rebels at stagnation!",
+        entries,
+        "en",
+        "manual",
+    )
+
+    exact = next(candidate for candidate in candidates if candidate.match_type == "exact")
+    assert exact.start == 1.0
+    assert exact.end == 2.9
+    assert exact.text == "My mind rebels at stagnation."
+
+
+def test_empty_caption_list_and_empty_target_return_no_candidates() -> None:
+    entry = SubtitleEntry("target", 1.0, 2.0)
+    assert find_caption_candidates("target", [], "en", "manual") == []
+    assert find_caption_candidates("   ", [entry], "en", "manual") == []

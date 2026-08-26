@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import asdict
@@ -12,6 +13,7 @@ from .models import MediaInfo, OCRLine, Transcription, TranscriptWord
 
 
 CACHE_SCHEMA_VERSION = 1
+LOGGER = logging.getLogger(__name__)
 
 
 def file_fingerprint(path: Path) -> str:
@@ -43,20 +45,27 @@ class JsonFileCache:
         value = payload.get("value")
         return value if isinstance(value, dict) else None
 
-    def put(self, namespace: str, key: str, value: dict[str, Any]) -> None:
+    def put(self, namespace: str, key: str, value: dict[str, Any]) -> bool:
         directory = self.root / namespace
-        directory.mkdir(parents=True, exist_ok=True)
         destination = directory / f"{key}.json"
         temporary = directory / f".{destination.name}.{uuid.uuid4().hex}.part"
         payload = {"schema_version": CACHE_SCHEMA_VERSION, "value": value}
         try:
+            directory.mkdir(parents=True, exist_ok=True)
             temporary.write_text(
                 json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
                 encoding="utf-8",
             )
             temporary.replace(destination)
+            return True
+        except OSError as exc:
+            LOGGER.warning("Optional %s cache write skipped: %s", namespace, exc)
+            return False
         finally:
-            temporary.unlink(missing_ok=True)
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 class CachedTranscriber:

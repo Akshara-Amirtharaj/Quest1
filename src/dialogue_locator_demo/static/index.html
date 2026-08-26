@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Find the exact video frame where a target line is spoken.">
+    <title>Quest1 · Dialogue Frame Locator</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <header class="masthead">
+        <a class="brand" href="/" aria-label="Quest1 home"><span class="brand-mark">Q1</span><span>Quest1</span></a>
+        <span class="status"><i></i> V4 pipeline</span>
+      </header>
+
+      <section class="hero">
+        <p class="eyebrow">Dialogue frame locator</p>
+        <h1>Find the exact frame<br>where a line is spoken.</h1>
+        <p class="lede">Paste a public video URL and the dialogue you remember. Quest1 finds the earliest match and resolves its real presentation timestamp.</p>
+      </section>
+
+      <section class="workspace" aria-label="Frame locator">
+        <form id="find-form" novalidate>
+          <label for="video-url">Video URL</label>
+          <input id="video-url" name="video-url" type="url" placeholder="https://example.com/video" required>
+
+          <div class="field-heading"><label for="dialogue">Target dialogue</label><span id="dialogue-count">0 / 2000</span></div>
+          <textarea id="dialogue" name="dialogue" placeholder="Enter the line exactly as you remember it…" maxlength="2000" rows="3" required></textarea>
+
+          <div class="form-footer"><button id="submit-button" type="submit">Find frame <span aria-hidden="true">→</span></button></div>
+        </form>
+
+        <div id="error" class="error" role="alert" hidden><strong id="error-title">Couldn’t complete the request</strong><span id="error-message"></span></div>
+        <div id="processing" class="processing" role="status" hidden>
+          <div class="processing-line"></div>
+          <div><strong id="processing-title">Processing the video · 0s elapsed</strong><span>The backend is still working. If captions are unavailable, full-audio ASR can take several minutes on CPU.</span></div>
+        </div>
+      </section>
+
+      <section id="result" class="result" aria-live="polite" hidden>
+        <div class="result-heading">
+          <div>
+            <p class="eyebrow">Dialogue interval</p>
+            <div class="timestamp-range">
+              <div><span>Start</span><h2 id="result-start"></h2></div>
+              <b aria-hidden="true">→</b>
+              <div><span>End</span><h2 id="result-end"></h2></div>
+            </div>
+          </div>
+          <div class="confidence-block">
+            <span id="result-confidence" class="confidence"></span>
+            <small id="confidence-summary"></small>
+          </div>
+        </div>
+        <figure><img id="result-frame" alt="Extracted dialogue frame"><figcaption id="result-caption"></figcaption></figure>
+        <blockquote id="result-dialogue"></blockquote>
+        <div class="metrics">
+          <div><span>Match score</span><strong id="result-score"></strong></div>
+          <div><span>Localized by</span><strong id="result-localized"></strong></div>
+          <div><span>Verified by</span><strong id="result-verified"></strong></div>
+          <div><span>Processing time</span><strong id="result-elapsed"></strong></div>
+        </div>
+        <details>
+          <summary>Processing details</summary>
+          <dl>
+            <div><dt>Dialogue interval</dt><dd id="detail-interval"></dd></div>
+            <div><dt>Match type</dt><dd id="detail-match-type"></dd></div>
+            <div><dt>Occurrences</dt><dd id="detail-occurrences"></dd></div>
+            <div><dt>Frame PTS</dt><dd id="detail-pts"></dd></div>
+          </dl>
+        </details>
+      </section>
+
+      <footer><span>Quest1</span><span>Caption localization · ASR verification · PTS frame resolution</span></footer>
+    </main>
+  </body>
+</html>

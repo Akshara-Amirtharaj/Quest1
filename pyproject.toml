@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "av>=12,<16",
+    "fastapi>=0.115,<0.117",
     "faster-whisper>=1.2,<2",
     "Pillow>=10,<12",
     "paddleocr>=3.2,<4",
@@ -17,11 +18,12 @@ dependencies = [
     "pysubs2>=1.8,<2",
     "rapidfuzz>=3.9,<4",
     "requests>=2.32,<3",
+    "uvicorn>=0.34,<0.36",
     "yt-dlp[curl-cffi]>=2025.1.15",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<9"]
+dev = ["httpx>=0.27,<1", "pytest>=8,<9"]
 precision = ["whisperx>=3.3,<4"]
 
 [project.scripts]
@@ -30,9 +32,13 @@ quest1-v0 = "dialogue_locator.cli:v0_main"
 quest1-v1 = "dialogue_locator.cli:v1_main"
 quest1-v2 = "dialogue_locator.cli:v2_main"
 quest1-v3 = "dialogue_locator.cli:v3_main"
+quest1-api = "dialogue_locator_demo.api:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+dialogue_locator_demo = ["static/*"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"

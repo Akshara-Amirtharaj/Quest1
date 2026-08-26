@@ -49,6 +49,7 @@ No later milestone is defined by this project.
 ```text
 Quest1/
 ├── src/dialogue_locator/   # installable application package
+├── src/dialogue_locator_demo/ # FastAPI adapter and bundled browser UI
 ├── tests/                  # offline unit and regression tests
 ├── output/.gitkeep         # generated frames are ignored
 ├── README.md               # problem, setup, usage, and limitations
@@ -102,6 +103,19 @@ quest1-v3 "https://example.com/public-video" "target dialogue" --language en
 # Final V4-hardened pipeline
 quest1 "https://example.com/public-video" "target dialogue" --language en
 ```
+
+## Demo/API
+
+The root installation also provides the local demo server:
+
+```powershell
+quest1-api
+```
+
+Open `http://127.0.0.1:8000`. The FastAPI process serves both the browser UI and
+`POST /api/find`; runtime media and frames are stored under `.cache/demo` by
+default. Run it without `--reload` so long ASR/model operations are not restarted.
+See [DEMO.md](DEMO.md) for the request/response details.
 
 Useful V4 options:
 

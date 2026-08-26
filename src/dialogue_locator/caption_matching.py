@@ -26,33 +26,42 @@ def find_caption_candidates(
     candidates: list[CaptionCandidate] = []
     for start_index, first_entry in enumerate(entries):
         window_text: list[str] = []
-        maximum = min(len(entries), start_index + max_window_entries)
-        for end_index in range(start_index, maximum):
+        for end_index in range(start_index, len(entries)):
             window_text.append(entries[end_index].text)
             combined_text = " ".join(window_text)
             normalized_caption = normalize_text(combined_text)
             if not normalized_caption:
                 continue
+            match_type: str | None
             if normalized_caption == normalized_query:
                 match_type, score = "exact", 100.0
             elif normalized_query in normalized_caption:
                 match_type, score = "substring", 100.0
             else:
                 score = float(fuzz.ratio(normalized_query, normalized_caption))
-                if score < fuzzy_threshold:
-                    continue
-                match_type = "fuzzy"
-            candidates.append(
-                CaptionCandidate(
-                    text=combined_text,
-                    start=first_entry.start,
-                    end=entries[end_index].end,
-                    match_type=match_type,
-                    score=score,
-                    language=language,
-                    caption_source=caption_source,
+                match_type = "fuzzy" if score >= fuzzy_threshold else None
+            if match_type is not None:
+                candidates.append(
+                    CaptionCandidate(
+                        text=combined_text,
+                        start=first_entry.start,
+                        end=entries[end_index].end,
+                        match_type=match_type,
+                        score=score,
+                        language=language,
+                        caption_source=caption_source,
+                    )
                 )
-            )
+
+            # Keep the configured window for normal queries, but allow long
+            # dialogue to span as many cues as needed to accumulate comparable
+            # text. This avoids globally widening every caption search.
+            window_entries = end_index - start_index + 1
+            if (
+                window_entries >= max_window_entries
+                and len(normalized_caption) >= len(normalized_query)
+            ):
+                break
 
     return _deduplicate_candidates(candidates)
 

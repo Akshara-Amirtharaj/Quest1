@@ -36,7 +36,18 @@ from .frames import (
 )
 from .inspection import inspect_media
 from .matching import DEFAULT_FUZZY_THRESHOLD, find_dialogue_candidates, normalize_text
-from .models import CaptionCandidate, CaptionTrack, DialogueMatch, MediaInfo, ResolvedFrame, Transcription, V0Result, V1Result, V3Result
+from .models import (
+    CaptionCandidate,
+    CaptionInventory,
+    CaptionTrack,
+    DialogueMatch,
+    MediaInfo,
+    ResolvedFrame,
+    Transcription,
+    V0Result,
+    V1Result,
+    V3Result,
+)
 from .ocr import OCRReader, PADDLE_MODEL_DESCRIPTION, PaddleOCRReader, find_first_visible_frame
 from .precision import (
     DEFAULT_PRECISION_MODEL,
@@ -224,7 +235,11 @@ def run_v2(
             LOGGER.warning("Metadata-only inspection failed; using full acquisition: %s", exc)
         if source is not None:
             inventory = discover_captions(source.metadata)
-            selected = select_caption_tracks(inventory, language)
+            selected = _select_relevant_caption_tracks(
+                inventory,
+                language,
+                source.metadata,
+            )
             source_id = str(source.metadata.get("id") or "source")
             subtitle_cache_dir = work_dir / "captions" / source_id
             has_caption_candidates = False
@@ -319,7 +334,11 @@ def run_v2(
     ) as temporary:
         temporary_dir = Path(temporary)
         inventory = discover_captions(metadata)
-        selected_tracks = select_caption_tracks(inventory, language)
+        selected_tracks = _select_relevant_caption_tracks(
+            inventory,
+            language,
+            metadata,
+        )
         for source in ("manual", "automatic"):
             source_tracks = [track for track_source, track in selected_tracks if track_source == source]
             try:
@@ -616,6 +635,69 @@ def _caption_candidates_for_source(
             # Other variants normally contain the same cues; use them only as acquisition fallbacks.
             break
     return merge_caption_candidates(candidate_groups)
+
+
+def _select_relevant_caption_tracks(
+    inventory: CaptionInventory,
+    requested_language: str | None,
+    metadata: dict,
+) -> list[tuple[str, CaptionTrack]]:
+    """Prefer the source language instead of scanning every translated track."""
+
+    metadata_language = requested_language or next(
+        (
+            value.strip()
+            for key in ("language", "original_language")
+            if isinstance((value := metadata.get(key)), str) and value.strip()
+        ),
+        None,
+    )
+    if metadata_language is None:
+        return select_caption_tracks(inventory)
+
+    matching = select_caption_tracks(inventory, metadata_language)
+    selected: list[tuple[str, CaptionTrack]] = []
+    for source in ("manual", "automatic"):
+        source_tracks = [item for item in matching if item[0] == source]
+        if not source_tracks:
+            continue
+        languages = {track.language.casefold() for _, track in source_tracks}
+        preferred_language = min(
+            languages,
+            key=lambda track_language: _caption_language_priority(
+                track_language,
+                metadata_language,
+                source_tracks,
+            ),
+        )
+        selected.extend(
+            item
+            for item in source_tracks
+            if item[1].language.casefold() == preferred_language
+        )
+    return selected
+
+
+def _caption_language_priority(
+    track_language: str,
+    metadata_language: str,
+    source_tracks: list[tuple[str, CaptionTrack]],
+) -> tuple[int, str]:
+    normalized_track = track_language.replace("_", "-")
+    normalized_metadata = metadata_language.casefold().replace("_", "-")
+    track_names = [
+        (track.name or "").casefold()
+        for _, track in source_tracks
+        if track.language.casefold() == track_language
+    ]
+    is_original = normalized_track.endswith("-orig") or any(
+        "original" in name for name in track_names
+    )
+    if is_original:
+        return 0, track_language
+    if normalized_track == normalized_metadata:
+        return 1, track_language
+    return 2, track_language
 
 
 def _require_audio_video(media: MediaInfo) -> None:

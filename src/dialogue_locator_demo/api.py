@@ -288,7 +288,7 @@ def create_app(data_root: Path | None = None) -> FastAPI:
             while not stop_heartbeat.wait(HEARTBEAT_INTERVAL_SECONDS):
                 LOGGER.info(
                     "Quest1 request %s is still processing (%.0f seconds elapsed). "
-                    "Caption unavailability can require full-audio ASR.",
+                    "Caption acquisition/verification or full-audio ASR may take time.",
                     request_id[:8],
                     time.perf_counter() - started,
                 )

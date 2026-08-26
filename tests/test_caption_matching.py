@@ -70,6 +70,27 @@ def test_caption_target_spans_three_entries_with_boundary_timestamps() -> None:
     assert exact.text == "My mind rebels at stagnation."
 
 
+def test_long_caption_target_extends_beyond_configured_short_window() -> None:
+    entries = [
+        SubtitleEntry(f"part {index}", float(index), float(index + 1))
+        for index in range(1, 16)
+    ]
+    query = " ".join(entry.text for entry in entries)
+
+    candidates = find_caption_candidates(
+        query,
+        entries,
+        "en",
+        "automatic",
+        max_window_entries=4,
+    )
+
+    exact = next(candidate for candidate in candidates if candidate.match_type == "exact")
+    assert exact.start == 1.0
+    assert exact.end == 16.0
+    assert exact.text == query
+
+
 def test_empty_caption_list_and_empty_target_return_no_candidates() -> None:
     entry = SubtitleEntry("target", 1.0, 2.0)
     assert find_caption_candidates("target", [], "en", "manual") == []

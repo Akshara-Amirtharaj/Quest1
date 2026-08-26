@@ -10,6 +10,7 @@ from dialogue_locator.errors import V0Error
 from dialogue_locator.matching import find_dialogue
 from dialogue_locator.models import (
     CaptionCandidate,
+    CaptionInventory,
     CaptionTrack,
     DialogueMatch,
     MediaInfo,
@@ -19,8 +20,77 @@ from dialogue_locator.models import (
     V1Result,
 )
 from dialogue_locator.caption_verification import CaptionVerification
-from dialogue_locator.pipeline import run_v2
+from dialogue_locator.pipeline import _select_relevant_caption_tracks, run_v2
 from dialogue_locator.subtitles import SubtitleRateLimitError
+
+
+def test_implicit_caption_language_prefers_original_source_track() -> None:
+    inventory = CaptionInventory(
+        automatic_captions=[
+            CaptionTrack("aa", "Afar", "json3", "https://example.test/aa.json3"),
+            CaptionTrack("en", "English", "json3", "https://example.test/en.json3"),
+            CaptionTrack(
+                "en-orig",
+                "English (Original)",
+                "json3",
+                "https://example.test/en-orig.json3",
+            ),
+            CaptionTrack("fr", "French", "json3", "https://example.test/fr.json3"),
+        ]
+    )
+
+    selected = _select_relevant_caption_tracks(
+        inventory,
+        requested_language=None,
+        metadata={"language": "en"},
+    )
+
+    assert [(source, track.language) for source, track in selected] == [
+        ("automatic", "en-orig")
+    ]
+
+
+def test_explicit_caption_language_keeps_existing_language_selection() -> None:
+    inventory = CaptionInventory(
+        automatic_captions=[
+            CaptionTrack("en", "English", "json3", "https://example.test/en.json3"),
+            CaptionTrack("fr", "French", "json3", "https://example.test/fr.json3"),
+        ]
+    )
+
+    selected = _select_relevant_caption_tracks(
+        inventory,
+        requested_language="fr",
+        metadata={"language": "en"},
+    )
+
+    assert [(source, track.language) for source, track in selected] == [
+        ("automatic", "fr")
+    ]
+
+
+def test_explicit_base_language_prefers_original_variant() -> None:
+    inventory = CaptionInventory(
+        automatic_captions=[
+            CaptionTrack("en", "English", "vtt", "https://example.test/en.vtt"),
+            CaptionTrack(
+                "en-orig",
+                "English (Original)",
+                "json3",
+                "https://example.test/en-orig.json3",
+            ),
+        ]
+    )
+
+    selected = _select_relevant_caption_tracks(
+        inventory,
+        requested_language="en",
+        metadata={"language": "en"},
+    )
+
+    assert [(source, track.language, track.extension) for source, track in selected] == [
+        ("automatic", "en-orig", "json3")
+    ]
 
 
 def test_rate_limited_caption_stops_requests_and_falls_back_to_v1(tmp_path: Path) -> None:

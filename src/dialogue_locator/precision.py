@@ -87,6 +87,9 @@ class PrecisionFallbackTranscriber:
             self._select(base_transcription, self.base_transcriber, self.base_model_name)
             return base_transcription
 
+        # Candidate windows use the recall gate to avoid loading the larger
+        # model for unrelated text. Full-audio retry is separately opt-in and
+        # therefore is not suppressed by this candidate-only gate.
         if self.scope == "candidate_window" and not precision_fallback_eligible(
             self.base_match_score,
             self.precision_trigger_threshold,
@@ -122,6 +125,8 @@ class PrecisionFallbackTranscriber:
                 "Precision ASR fallback unavailable; preserving base ASR behavior: %s",
                 exc,
             )
+            # Precision is optional: an unavailable model must preserve the
+            # base transcription and its normal match/no-match semantics.
             if base_transcription is not None:
                 self._select(base_transcription, self.base_transcriber, self.base_model_name)
                 self.precision_fallback_used = True

@@ -62,6 +62,8 @@ def _cookie_options(
 
 
 def _selected_video_source(metadata: dict[str, Any]) -> tuple[str | None, dict[str, str]]:
+    # Prefer yt-dlp's selected stream, then choose the closest practical 720p
+    # video URL so audio-only localization can resolve one frame remotely.
     candidates: list[dict[str, Any]] = []
     requested = metadata.get("requested_formats")
     if isinstance(requested, list):
@@ -306,6 +308,7 @@ def _cached_media_for_url(url: str, cache_dir: Path) -> tuple[Path, dict[str, An
     if not isinstance(filename, str) or not filename or Path(filename).name != filename:
         return None
     media_path = (cache_dir / filename).resolve()
+    # The index is provider-derived data; never let it point outside its cache.
     try:
         media_path.relative_to(cache_dir.resolve())
     except ValueError:
@@ -400,6 +403,8 @@ def download_direct_media(url: str, cache_dir: Path) -> tuple[Path, dict[str, An
     if _is_completed_media_file(destination):
         return destination.resolve(), {"extractor": "direct-http", "webpage_url": url}
 
+    # Stream into a partial and promote it only after validation, matching the
+    # rule that incomplete downloads must never become authoritative media.
     temporary = destination.with_suffix(destination.suffix + ".part")
     try:
         with requests.get(

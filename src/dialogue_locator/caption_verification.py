@@ -36,6 +36,8 @@ def verify_caption_candidates(
     config: V2Config,
     audio_extractor: AudioExtractor = extract_speech_audio,
 ) -> tuple[CaptionVerification | None, float]:
+    """Verify chronological caption regions with progressively wider ASR windows."""
+
     processed_seconds = 0.0
     attempted_windows: set[tuple[int, int]] = set()
     audio_path = temporary_dir / "verification.wav"
@@ -49,6 +51,8 @@ def verify_caption_candidates(
             if window_end <= window_start:
                 continue
             window_key = (round(window_start * 1000), round(window_end * 1000))
+            # Overlapping caption candidates can produce the same extraction
+            # window; transcribe it only once.
             if window_key in attempted_windows:
                 continue
             attempted_windows.add(window_key)
@@ -65,6 +69,8 @@ def verify_caption_candidates(
                 try:
                     transcription = transcriber(audio_path)
                 finally:
+                    # Precision fallback may run two models over this same
+                    # window, so processed audio reflects both ASR passes.
                     asr_call_count = max(
                         1,
                         int(getattr(transcriber, "last_asr_call_count", 1)),
@@ -85,6 +91,8 @@ def verify_caption_candidates(
                 )
                 continue
 
+            # ASR words are relative to the extracted WAV; restore the source
+            # media timeline, including a non-zero audio stream start.
             absolute_offset = window_start + audio_start_time
             return (
                 CaptionVerification(

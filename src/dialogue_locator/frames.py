@@ -113,6 +113,8 @@ def resolve_frame_at_timestamp(
     seek_margin: float = 2.0,
     http_headers: dict[str, str] | None = None,
 ) -> ResolvedFrame:
+    """Return the earliest decoded frame at or after a media timestamp."""
+
     if target_timestamp < 0:
         raise V0Error("Dialogue timestamp cannot be negative.")
     try:
@@ -137,6 +139,8 @@ def resolve_frame_at_timestamp(
             if stream.time_base is None:
                 raise V0Error("The video stream has no usable time base.")
 
+            # Seek backward to a keyframe, then compare decoded presentation
+            # timestamps. Frame counts or nominal FPS are not authoritative.
             seek_timestamp = max(0.0, target_timestamp - seek_margin)
             seek_offset = int(seek_timestamp / float(stream.time_base))
             container.seek(seek_offset, stream=stream, backward=True, any_frame=False)
@@ -175,6 +179,8 @@ def iter_frames_in_interval(
     end_timestamp: float,
     seek_margin: float = 2.0,
 ):
+    """Yield frames whose decoded PTS falls inside the requested interval."""
+
     if start_timestamp < 0 or end_timestamp < start_timestamp:
         raise V0Error("The OCR candidate interval is invalid.")
     try:

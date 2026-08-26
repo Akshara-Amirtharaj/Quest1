@@ -11,6 +11,8 @@ class V0Error(RuntimeError):
         code: str | None = None,
         stage: str | None = None,
     ) -> None:
+        # Older call sites raise message-only domain errors; central inference
+        # keeps their public code/stage stable without rewriting pipeline logic.
         inferred_code, inferred_stage = _classify_legacy_message(message)
         self.code = code or inferred_code
         self.stage = stage or inferred_stage

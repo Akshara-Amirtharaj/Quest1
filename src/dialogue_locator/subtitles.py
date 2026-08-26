@@ -43,6 +43,8 @@ def select_caption_tracks(
     inventory: CaptionInventory,
     requested_language: str | None = None,
 ) -> list[tuple[str, CaptionTrack]]:
+    """Return supported tracks in stable manual-then-automatic fallback order."""
+
     selected: list[tuple[str, CaptionTrack]] = []
     seen: set[tuple[str, str, str, str]] = set()
     sources = (
@@ -74,6 +76,8 @@ def select_caption_tracks(
 
 
 def download_subtitle(track: CaptionTrack, destination_dir: Path) -> Path:
+    """Download one track into a stable cache entry without publishing partials."""
+
     if not track.url or not track.extension:
         raise ValueError("Subtitle track is missing a URL or format")
     destination_dir.mkdir(parents=True, exist_ok=True)

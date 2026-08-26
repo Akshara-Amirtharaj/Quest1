@@ -31,6 +31,8 @@ def content_digest(path: Path) -> str:
 
 
 class JsonFileCache:
+    """Best-effort, schema-versioned JSON cache with atomic publication."""
+
     def __init__(self, root: Path) -> None:
         self.root = root
 
@@ -82,6 +84,8 @@ class CachedTranscriber:
         self.last_transcription: Transcription | None = None
 
     def __call__(self, audio_path: Path) -> Transcription:
+        # Temporary WAV paths change between runs, so transcript reuse is keyed
+        # by audio bytes plus the complete model/configuration identity.
         key_source = f"{self.identity}|{content_digest(audio_path)}"
         key = hashlib.sha256(key_source.encode("utf-8")).hexdigest()
         cached = self.cache.get("transcripts", key)

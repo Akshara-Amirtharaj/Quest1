@@ -212,6 +212,8 @@ def run_v2(
     tools = require_external_tools()
     source: SourceInspection | None = None
     if _allow_audio_only:
+        # Metadata preflight must check for a usable caption candidate before
+        # choosing audio-only acquisition; otherwise caption-first regresses.
         try:
             source = inspect_source(
                 url,
@@ -329,6 +331,8 @@ def run_v2(
                     config,
                 )
             except SubtitleRateLimitError:
+                # A provider-wide rate limit should end this caption pass; the
+                # reliable ASR fallback below must still run.
                 LOGGER.warning(
                     "Caption provider returned HTTP 429; stopping caption requests "
                     "and using full-audio ASR fallback."

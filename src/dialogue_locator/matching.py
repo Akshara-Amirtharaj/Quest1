@@ -76,6 +76,8 @@ def normalize_for_matching(text: str) -> str:
 
 
 def _transcript_tokens(words: list[TranscriptWord]) -> list[_NormalizedToken]:
+    # Preserve source-word indexes while canonicalizing so number/currency
+    # equivalence never loses the original text or timing boundaries.
     tokens: list[_NormalizedToken] = []
     for word_index, word in enumerate(words):
         normalized = unicodedata.normalize("NFKC", word.text).casefold()
@@ -282,6 +284,8 @@ def find_dialogue_candidates(
     query_tokens = normalized_query.split()
     query_length = len(query_tokens)
     transcript_texts = [token.text for token in tokens]
+    # Very short single tokens have too many plausible fuzzy neighbours to be
+    # accepted safely without exact evidence.
     exact_only_short_query = query_length == 1 and len(normalized_query) <= 4
 
     length_delta = max(1, min(3, math.ceil(query_length * 0.25)))

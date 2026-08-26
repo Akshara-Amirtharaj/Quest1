@@ -313,7 +313,7 @@ def create_app(data_root: Path | None = None) -> FastAPI:
                 work_dir=root / "media",
                 output_dir=root / "runs" / request_id,
                 model_cache=root / "models",
-                language=None,
+                language="en",
             )
             frame_id = registry.add(result.frame.path)
         except V0Error as exc:

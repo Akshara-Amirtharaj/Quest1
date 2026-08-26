@@ -71,7 +71,7 @@ def test_find_adapts_v4_result_and_serves_opaque_frame_url(tmp_path: Path) -> No
     assert payload["processing"]["elapsed_seconds"] >= 0
     assert client.get(payload["frame"]["url"]).content == b"png"
     _, kwargs = run.call_args
-    assert kwargs["language"] is None
+    assert kwargs["language"] == "en"
     assert kwargs["output_dir"].parent == (tmp_path / "data" / "runs").resolve()
 
 
